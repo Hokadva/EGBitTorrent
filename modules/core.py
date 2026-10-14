@@ -1,0 +1,51 @@
+import os
+
+
+def human_size(size: int) -> str:
+    if size is None:
+        return "-"
+
+    for tp in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024:
+            return f"{size} {tp}"
+
+        size = round(size / 1024, 2)
+
+    return f"{size} {tp}"
+
+
+def human_rate(speed: int):
+    if not speed:
+        return "0 B/s"
+
+    return f"{human_size(speed)}/s"
+
+def human_time(seconds: float) -> str:
+    if seconds <= 0 or seconds > 30 * 60 * 60 * 24:
+        return "-"
+
+    seconds = round(seconds)
+    hours = seconds // 60 // 60
+    minutes = seconds // 60 - hours * 60
+    seconds = seconds - minutes * 60 - hours * 60 * 60
+
+    if hours:
+        return f"{hours} h {minutes} m"
+    if minutes:
+        return f"{minutes} m {seconds} s"
+
+    return f"{seconds} s"
+
+def get_free_disk_space(path: str) -> int:
+    """Свободное место на диске в байтах. 0 — если путь недоступен."""
+    try:
+        usage = os.statvfs(path) if hasattr(os, "statvfs") else None
+        if usage:
+            return usage.f_bavail * usage.f_frsize
+    except Exception:
+        pass
+    try:
+        import shutil
+        return shutil.disk_usage(path).free
+    except Exception:
+        return 0
