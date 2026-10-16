@@ -5,3 +5,10 @@ PyQt6-Qt6==6.10.2
 PyQt6_sip==13.10.2
 QtAwesome==1.4.2
 QtPy==2.4.3
+libtorrent==2.1.1
+packaging==26.3
+PyQt6==6.10.2
+PyQt6-Qt6==6.10.2
+PyQt6_sip==13.10.2
+QtAwesome==1.4.2
+QtPy==2.4.3

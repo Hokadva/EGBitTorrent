@@ -73,25 +73,16 @@ def validate_torrent_file(path: str) -> ValidationResult:
 
     return ValidationResult(True)
 
-def validate_save_path(
-        path: str, create_if_missing: bool = False) -> ValidationResult:
+def validate_save_path(path: str) -> ValidationResult:
     if not path or not path.strip():
         return ValidationResult(False, "The folder isn't specified")
 
     path = path.strip()
 
     if not os.path.exists(path):
-        if create_if_missing:
-            try:
-                os.makedirs(path, exist_ok=True)
-            except Exception as e:
-                return ValidationResult(
-                    False, f"Can't create folder: {e}")
-
-        else:
-            return ValidationResult(
-                False, f"The folder isn't exists {path}"
-            )
+        return ValidationResult(
+            False, f"The folder isn't exists {path}"
+        )
 
     if not os.path.isdir(path):
         return ValidationResult(False, f"That object isn't folder {path}")
@@ -101,16 +92,16 @@ def validate_save_path(
 
     return ValidationResult(True)
 
-def validate_add_magnet(url, save_path, create_if_missing):
+def validate_add_magnet(url: str, save_path: str) -> ValidationResult:
     result = validate_magnet(url)
     if not result.ok:
         return result
 
-    return validate_save_path(save_path, create_if_missing)
+    return validate_save_path(save_path)
 
-def validate_add_file(path, save_path, create_if_missing):
+def validate_add_file(path: str, save_path: str) -> ValidationResult:
     result = validate_torrent_file(path)
     if not result.ok:
         return result
 
-    return validate_save_path(save_path, create_if_missing)
+    return validate_save_path(save_path)

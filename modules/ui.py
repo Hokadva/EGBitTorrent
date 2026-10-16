@@ -5,35 +5,38 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QProgressBar,
     QListWidget, QListWidgetItem, QTabWidget, QStatusBar,
     QHeaderView, QAbstractItemView, QFileDialog, QMessageBox, QDialog,
-    QDialogButtonBox, QGroupBox, QCheckBox, QGridLayout
+    QDialogButtonBox, QGroupBox, QCheckBox, QGridLayout, QTreeWidget,
+    QTreeWidgetItem
 )
 from modules.torrent import TorrentFile
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction
+from modules.widgets import TorrentFileTreeItem
+import os
+import datetime
 import qtawesome as qta
 from modules.themes import DARK_QSS
 from modules.validator import (
     validate_save_path, validate_add_magnet, validate_add_file
 )
+import libtorrent as lt
 from modules.core import human_size, get_free_disk_space
 
 
 class AddTorrentWindow(QDialog):
-    MODE_MAGNET = "magnet"
-    MODE_FILE = "file"
-
-    def __init__(self, default_save_path: str, mode: str, parent):
+    def __init__(self, default_save_path: str, parent, torrent: str):
         super().__init__(parent)
 
-        if mode not in (self.MODE_MAGNET, self.MODE_FILE):
-            raise ValueError("Incorrect mode")
+        self.torrent = torrent
 
         self.setWindowTitle("Add torrent")
         self.resize(820, 560)
 
         self._default_save_path = default_save_path
 
+        self._load_torrent_info()
         self.build_ui()
-        self._validate()
+        self._update_free_space()
+        self._apply_torrent_info(self._torrent_info)
 
     def build_ui(self):
         root = QVBoxLayout(self)
@@ -43,60 +46,28 @@ class AddTorrentWindow(QDialog):
         top = QHBoxLayout()
         top.setSpacing(12)
 
-        top.addWidget(self._build_left_panel(), 1)
-        top.addWidget(self._build_right_panel(), 1)
+        top.addLayout(self._build_left_panel(), 1)
+        top.addLayout(self._build_right_panel(), 1)
 
         root.addLayout(top, 1)
 
         root.addWidget(self._build_bottom_panel())
 
-        buttons = QDialogButtonBox(
+        self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        root.addWidget(self.buttons)
 
-        self._button_box = buttons
+        self._button_box = self.buttons
 
     def _build_left_panel(self):
         panel = QVBoxLayout()
         panel.setSpacing(10)
-
-        if self.mode == self.MODE_MAGNET:
-            source_group = QGroupBox("Magnet-link")
-            sg = QVBoxLayout(source_group)
-
-            self.magnet_edit = QLineEdit()
-            self.magnet_edit.setPlaceholderText("magnet:?xt=urn:btih:...")
-            self.magnet_edit.textChanged.connect(self._validate)
-            sg.addWidget(self.magnet_edit)
-
-        else:
-            source_group = QGroupBox(".torrent-file")
-            sg = QVBoxLayout(source_group)
-
-            row = QHBoxLayout()
-            row.setSpacing(6)
-
-            self.file_edit = QLineEdit()
-            self.file_edit.setPlaceholderText("Torrent-file path...")
-            self.file_edit.textChanged.connect(self._validate)
-            row.addWidget(self.file_edit, 1)
-
-            browse_file_btn = QPushButton(
-                qta.icon("fa5s.file-import", color="#9aa1ac"), ""
-            )
-            browse_file_btn.setFixedWidth(34)
-            browse_file_btn.clicked.connect(self._on_browse_file)
-            row.addWidget(browse_file_btn)
-
-            sg.addLayout(row)
-
-        panel.addWidget(source_group)
 
         save_group = QGroupBox("Save folder")
         svg = QVBoxLayout(save_group)
@@ -106,6 +77,7 @@ class AddTorrentWindow(QDialog):
 
         self.path_edit = QLineEdit(self._default_save_path)
         self.path_edit.textChanged.connect(self._update_free_space)
+        self.path_edit.textEdited.connect(self._update_free_space)
         row.addWidget(self.path_edit, 1)
 
         browse_dir_btn = QPushButton(
@@ -118,7 +90,8 @@ class AddTorrentWindow(QDialog):
         svg.addLayout(row)
 
         self.free_space_label = QLabel("Free disc-space: -")
-        self.free_space_label.setStyleSheet("color: #9aa1ac; font-size: 11px;")
+        self.free_space_label.setStyleSheet(
+            "color: #9aa1ac; font-size: 11px;")
         svg.addWidget(self.free_space_label)
 
         panel.addWidget(save_group)
@@ -135,6 +108,10 @@ class AddTorrentWindow(QDialog):
         self.start_now_cb.setChecked(True)
         panel.addWidget(self.start_now_cb)
 
+        self.create_folder_cb = QCheckBox("Create folder for torrent")
+        self.create_folder_cb.setChecked(True)
+        panel.addWidget(self.create_folder_cb)
+
         panel.addStretch(1)
 
         return panel
@@ -146,24 +123,26 @@ class AddTorrentWindow(QDialog):
         files_group = QGroupBox("Files:")
         fg = QVBoxLayout(files_group)
 
-        self.files_table = QTableWidget(0, 2)
-        self.files_table.setHorizontalHeaderLabels(["Name", "Size"])
-        self.files_table.verticalHeader().setVisible(False)
-        self.files_table.setShowGrid(False)
-        self.files_table.setAlternatingRowColors(True)
-        self.files_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.files_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection)
+        self.files_tree = QTreeWidget()
+        self.files_tree.setHeaderLabels(["Name", "Size"])
+        self.files_tree.setColumnCount(2)
+        self.files_tree.setAlternatingRowColors(True)
+        self.files_tree.setRootIsDecorated(True)
+        self.files_tree.setUniformRowHeights(True)
+        self.files_tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.files_tree.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
 
-        header = self.files_table.horizontalHeader()
+        header = self.files_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
 
-        fg.addWidget(self.files_table)
+        fg.addWidget(self.files_tree)
 
-        self.files_status = QLabel("—")
+        self.files_status = QLabel("-")
         self.files_status.setStyleSheet("color: #9aa1ac; font-size: 11px;")
         fg.addWidget(self.files_status)
 
@@ -184,11 +163,11 @@ class AddTorrentWindow(QDialog):
             grid.addWidget(lbl, r, 0, Qt.AlignmentFlag.AlignRight)
             grid.addWidget(value_widget, r, 1, 1, 3)
 
-        self.info_name = QLabel("—")
+        self.info_name = QLabel("-")
         add_row(0, "Name", self.info_name)
 
-        self.info_size = QLabel("—")
-        self.info_date = QLabel("—")
+        self.info_size = QLabel("-")
+        self.info_date = QLabel("-")
         row1 = QHBoxLayout()
         row1.setSpacing(24)
         row1.addWidget(QLabel("Size:"))
@@ -199,14 +178,233 @@ class AddTorrentWindow(QDialog):
         row1.addStretch(1)
         grid.addLayout(row1, 1, 1, 1, 3)
 
-        self.info_comment = QLabel("—")
+        self.info_comment = QLabel("-")
         self.info_comment.setWordWrap(True)
         add_row(2, "Comment:", self.info_comment)
 
         return box
 
-    def _on_browse_file(self):
-        path, _ = QFileDialog.getOpe
+    def _on_browse_dir(self):
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Choose save folder:",
+            self.path_edit.text() or self._default_save_path,
+        )
+        if path:
+            self.path_edit.setText(path)
+
+    def _update_free_space(self):
+        path = self.path_edit.text().strip()
+        if not path:
+            self.free_space_label.setText("Free disc space: -")
+            return
+
+        if not os.path.exists(path) or not os.path.isdir(path):
+            self.free_space_label.setText(
+                f"Path doesn't exists: {path}"
+            )
+            self._change_apply_btn_status(False)
+            return
+
+        free = get_free_disk_space(path)
+        if free > 0:
+            self.free_space_label.setText(
+                f"Free disc space: {human_size(free)}"
+            )
+            if free < self._torrent_info.total_size():
+                self._change_apply_btn_status(False)
+                return
+
+        else:
+            self.free_space_label.setText("Free disc space: -")
+            self._change_apply_btn_status(False)
+            return
+
+        self._change_apply_btn_status(True)
+
+    def _change_apply_btn_status(self, status):
+        accept_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if status:
+            accept_btn.setEnabled(True)
+            return
+
+        accept_btn.setEnabled(False)
+
+    def _load_torrent_info(self):
+        """Загружает метаданные из .torrent-файла и обновляет UI."""
+        try:
+            info = lt.torrent_info(self.torrent)
+
+        except Exception as e:
+            self._torrent_info = None
+            self.files_table.setRowCount(0)
+            self.files_status.setText(f"Read error: {e}")
+            self.info_name.setText("-")
+            self.info_size.setText("-")
+            self.info_date.setText("-")
+            self.info_comment.setText("-")
+            return
+
+        self._torrent_info = info
+
+    def _apply_torrent_info(self, info):
+        """Заполняет UI данными из lt.torrent_info."""
+        self.info_name.setText(info.name() or "-")
+        self.info_size.setText(human_size(info.total_size()))
+
+        created = info.creation_date()
+        if created and created > 0:
+            self.info_date.setText(
+                datetime.datetime.fromtimestamp(created
+                                                ).strftime("%d.%m.%Y %H:%M")
+            )
+        else:
+            self.info_date.setText("-")
+
+        comment = info.comment() if hasattr(info, "comment") else ""
+        self.info_comment.setText(comment or "-")
+
+        self._populate_files_tree(info)
+
+    def _populate_files_tree(self, info):
+        """Строит дерево папок и файлов из lt.torrent_info.
+        Если у торрента есть общий корень — он не показывается."""
+        self.files_tree.clear()
+        self.files_tree.setSortingEnabled(True)
+        self.files_tree.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+
+        storage = info.files()
+        n = storage.num_files()
+
+        folder_icon = qta.icon("fa5s.folder", color="#eab308")
+        file_icon = qta.icon("fa5s.file", color="#9aa1ac")
+
+        paths = []
+        for i in range(n):
+            full_path = storage.file_path(i).replace("\\", "/")
+            paths.append((full_path, storage.file_size(i)))
+
+        common_root = self._find_common_root([p for p, _ in paths])
+
+        def strip_root(p: str) -> str:
+            if not common_root:
+                return p
+
+            prefix = common_root + "/"
+            return p[len(prefix):] if p.startswith(prefix) else p
+
+        folder_nodes = {}
+
+        for full_path, size in paths:
+            rel_path = strip_root(full_path)
+            parts = rel_path.split("/")
+
+            parent_item = None
+            current_path = ""
+
+            for part in parts[:-1]:
+                current_path = f"{current_path}/{part}" if current_path else part
+
+                if current_path not in folder_nodes:
+                    node = TorrentFileTreeItem([part, ""], True)
+                    node.setIcon(0, folder_icon)
+                    node.setData(0, Qt.ItemDataRole.UserRole, {"type": "folder"})
+
+                    if parent_item is None:
+                        self.files_tree.addTopLevelItem(node)
+                    else:
+                        parent_item.addChild(node)
+
+                    folder_nodes[current_path] = node
+
+                parent_item = folder_nodes[current_path]
+
+            file_name = parts[-1]
+            file_node = TorrentFileTreeItem(
+                [file_name, human_size(size)], False)
+            file_node.setIcon(0, file_icon)
+            file_node.setData(
+                0, Qt.ItemDataRole.UserRole,
+                {"type": "file", "size": size}
+            )
+            file_node.setTextAlignment(
+                1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+
+            if parent_item is None:
+                self.files_tree.addTopLevelItem(file_node)
+            else:
+                parent_item.addChild(file_node)
+
+        self._accumulate_folder_sizes(self.files_tree.invisibleRootItem())
+
+        self.files_status.setText(
+            f"Файлов: {n}, всего: {human_size(info.total_size())}"
+        )
+
+        self.files_tree.setSortingEnabled(True)
+        self.files_tree.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+
+    def _find_common_root(self, paths):
+        """
+        Возвращает общий корневой путь для всех файлов, если он есть.
+        Например, ["a/b/c.mkv", "a/b/d.mkv"] → "a/b"
+                ["a/x.mkv", "b/y.mkv"] -> None
+                ["file.mkv"] -> None (один файл — нет корня)
+        """
+        if len(paths) <= 1:
+            return None
+
+        split_paths = [p.split("/") for p in paths]
+
+        common = []
+        for i, part in enumerate(split_paths[0][:-1]):
+            if all(len(p) > i + 1 and p[i] == part for p in split_paths):
+                common.append(part)
+            else:
+                break
+
+        return "/".join(common) if common else None
+
+    def _accumulate_folder_sizes(self, item) -> int:
+        total = 0
+
+        for i in range(item.childCount()):
+            child = item.child(i)
+            data = child.data(0, Qt.ItemDataRole.UserRole) or {}
+
+            if data.get("type") == "folder":
+                size = self._accumulate_folder_sizes(child)
+                child.setText(1, human_size(size))
+                child.setTextAlignment(
+                    1,
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                )
+                total += size
+            else:
+                total += data.get("size", 0)
+
+        return total
+
+    @property
+    def save_path(self) -> str:
+        return self.path_edit.text().strip()
+
+    @property
+    def is_start_now(self) -> bool:
+        return self.start_now_cb.isChecked()
+
+    @property
+    def is_create_folder(self) -> bool:
+        return self.create_folder_cb.isChecked()
+
+    @property
+    def groups(self) -> list:
+        return 1 #That for future
+
+    @property
+    def get_torrent_info(self):
+        return self._torrent_info
 
 
 class UI(QMainWindow):
@@ -524,7 +722,7 @@ class UI(QMainWindow):
             if torrent.id in exists:
                 self._update_row(exists[torrent.id], torrent)
             else:
-                self._add_row(self.table, torrent)
+                self._add_row(torrent)
 
         self._update_statusbar(torrents)
 
@@ -577,7 +775,7 @@ class UI(QMainWindow):
             return
 
         validate_res = validate_add_file(
-            path, self._get_default_savepath(), False
+            path, self._get_default_savepath()
         )
 
         if not validate_res.ok:
@@ -586,10 +784,27 @@ class UI(QMainWindow):
             )
             return
 
-        self._add_torrent_window(self, path)
+        add_torrent_window = AddTorrentWindow(
+            self._get_default_savepath(), self, path
+        )
 
-    def _add_torrent_window(self, path):
-        ...
+        result = add_torrent_window.exec()
+        if result != QDialog.DialogCode.Accepted:
+            return
+
+        save_path = add_torrent_window.save_path
+        start_now = add_torrent_window.is_start_now
+        create_folder = add_torrent_window.is_create_folder
+        groups = add_torrent_window.groups #That for future
+
+        validate_res = validate_save_path(save_path)
+        if not validate_res.ok:
+            QMessageBox.critical(
+                self, "Error", f"{validate_res.error}"
+            )
+            return
+
+        self.torrent_engine.add_torrent_file(path, start_now, save_path)
 
     def _apply_theme(self):
         ...

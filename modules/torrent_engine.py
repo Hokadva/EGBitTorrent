@@ -55,27 +55,27 @@ class TorrentEngine:
         except Exception as e:
             print(f"apply_settings failed: {e}")
 
-    def _register(self, torrent_id: str, handle, name: str, save_path: str):
+    def _register(self, torrent_id: str, handle, name: str, save_path: str, start_now: bool):
         """Добавляет торрент в очередь или загрузку"""
         with self._lock:
             self._handles[torrent_id] = handle
+
             model = TorrentFile(
                 id=torrent_id,
                 name=name,
                 save_path=save_path,
-                state=TorrentState.QUEUED
+                state=TorrentState.QUEUED if start_now else TorrentState.PAUSED,
             )
             self._torrents[torrent_id] = model
 
-            if self._active_count() > self.max_active:
+            if not start_now:
                 handle.pause()
-                self._queued.append(torrent_id)
+                return
 
-            else:
-                self._queued.append(torrent_id)
-                self._start_next()
+            self._queued.append(torrent_id)
+            self._start_next()
 
-    def add_magnet(self, url: str, save_path: Optional[str] = None):
+    def add_magnet(self, url: str, start_now: bool, save_path: Optional[str] = None):
         """Добавляет торрент по magnet ссылке"""
         save_path = save_path or self._default_savepath
 
@@ -86,11 +86,12 @@ class TorrentEngine:
             handle = self._session.add_torrent(params)
 
         torrent_id = str(handle.info_hash())
-        self._register(torrent_id, handle, name=url[:60], save_path=save_path)
+        self._register(torrent_id, handle, url[:60], save_path, start_now)
 
         return torrent_id
 
-    def add_torrent_file(self, path: str, save_path: Optional[str] = None) -> str:
+    def add_torrent_file(
+            self, path: str, start_now: bool, save_path: Optional[str] = None) -> str:
         """Добавляет торрент по файлу"""
         if not os.path.isfile(path):
             raise FileNotFoundError(f"File not found {path}")
@@ -107,7 +108,7 @@ class TorrentEngine:
             handle = self._session.add_torrent(params)
 
         torrent_id = str(handle.info_hash())
-        self._register(torrent_id, handle, name=info.name(), save_path=save_path)
+        self._register(torrent_id, handle, info.name(), save_path, start_now)
 
         return torrent_id
 
@@ -148,19 +149,18 @@ class TorrentEngine:
                     self._queued.remove(torrent_id)
 
     def resume(self, torrent_id: str):
-        """Начинает загрузку торрента после остановки"""
+        """Возобновляет торрент — ставит в очередь, _start_next решает."""
         with self._lock:
             if torrent_id in self._queued:
-                self._queued.remove(torrent_id)
-                self._queued.append(torrent_id)
-                self._start_next()
-            else:
-                handle = self._handles.get(torrent_id)
-                if handle:
-                    handle.resume()
-                torrent = self._torrents.get(torrent_id)
-                if torrent:
-                    torrent.state = TorrentState.DOWNLOADING
+                return
+
+            torrent = self._torrents.get(torrent_id)
+            if torrent is None:
+                return
+
+            self._queued.append(torrent_id)
+            torrent.state = TorrentState.QUEUED
+            self._start_next()
 
     def remove(self, torrent_id: str, delete_files: bool = False):
         """Удаляет торрент вместе или без сопутствующих файлов"""
