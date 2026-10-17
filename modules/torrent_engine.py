@@ -5,7 +5,9 @@ import threading
 from typing import Dict, List, Optional
 import time
 
-from modules.torrent import TorrentFile, TorrentFileInfo, TorrentState
+from modules.torrent import (
+    TorrentFile, DuplicateTorrentError, TorrentFileInfo, TorrentState)
+from modules.core import extract_magnet_name
 
 
 class TorrentEngine:
@@ -55,7 +57,9 @@ class TorrentEngine:
         except Exception as e:
             print(f"apply_settings failed: {e}")
 
-    def _register(self, torrent_id: str, handle, name: str, save_path: str, start_now: bool):
+    def _register(
+            self, torrent_id: str, handle, name: str,
+            save_path: str, start_now: bool):
         """Добавляет торрент в очередь или загрузку"""
         with self._lock:
             self._handles[torrent_id] = handle
@@ -75,7 +79,7 @@ class TorrentEngine:
             self._queued.append(torrent_id)
             self._start_next()
 
-    def add_magnet(self, url: str, start_now: bool, save_path: Optional[str] = None):
+    def add_magnet(self, url: str, save_path = None, start_now: bool = True):
         """Добавляет торрент по magnet ссылке"""
         save_path = save_path or self._default_savepath
 
@@ -86,30 +90,38 @@ class TorrentEngine:
             handle = self._session.add_torrent(params)
 
         torrent_id = str(handle.info_hash())
-        self._register(torrent_id, handle, url[:60], save_path, start_now)
+        self._register(
+            torrent_id, handle, extract_magnet_name(url), save_path, start_now)
 
         return torrent_id
 
-    def add_torrent_file(
-            self, path: str, start_now: bool, save_path: Optional[str] = None) -> str:
-        """Добавляет торрент по файлу"""
+    def add_torrent_file(self, path, save_path = None, start_now: bool = True):
         if not os.path.isfile(path):
             raise FileNotFoundError(f"File not found {path}")
 
         save_path = save_path or self._default_savepath
         info = lt.torrent_info(path)
 
-        params = {
-            "ti": info,
-            "save_path": save_path
-        }
+        params = lt.add_torrent_params()
+        params.ti = info
+        params.save_path = save_path
 
         with self._lock:
             handle = self._session.add_torrent(params)
 
         torrent_id = str(handle.info_hash())
-        self._register(torrent_id, handle, info.name(), save_path, start_now)
 
+        if torrent_id in self._torrents:
+            try:
+                self._session.remove_torrent(handle)
+
+            except Exception:
+                pass
+
+            raise DuplicateTorrentError(torrent_id)
+
+        self._register(torrent_id, handle, name=info.name(),
+                    save_path=save_path, start_now=start_now)
         return torrent_id
 
     def _active_count(self) -> int:
@@ -163,18 +175,27 @@ class TorrentEngine:
             self._start_next()
 
     def remove(self, torrent_id: str, delete_files: bool = False):
-        """Удаляет торрент вместе или без сопутствующих файлов"""
+        """Удаляет торрент. Работает даже при невалидном handle."""
         with self._lock:
             handle = self._handles.get(torrent_id)
-            if handle:
-                flags = lt.options_t.delete_files if delete_files else 0
-                try:
-                    self._session.remove_torrent(handle, flags)
-                except Exception:
-                    pass
 
-            if torrent_id in self._queued:
-                self._queued.remove(torrent_id)
+            if handle is not None:
+                try:
+                    if handle.is_valid():
+                        try:
+                            handle.pause()
+                        except Exception:
+                            pass
+
+                        flags = lt.options_t.delete_files if delete_files else 0
+                        self._session.remove_torrent(handle, flags)
+                except Exception as e:
+                    print(f"[remove] error: {e}")
+
+            self._handles.pop(torrent_id, None)
+            self._torrents.pop(torrent_id, None)
+            self._queued = [tid for tid in self._queued if tid != torrent_id]
+
             self._start_next()
 
     def update(self):
@@ -191,9 +212,19 @@ class TorrentEngine:
 
                 try:
                     status = handle.status()
+
                 except Exception as e:
                     torrent.state = TorrentState.ERROR
                     torrent.error_message = f"Error {e}"
+                    continue
+
+                if status.errc and status.errc.value() != 0:
+                    torrent.state = TorrentState.ERROR
+                    torrent.error_message = status.errc.message()
+                    try:
+                        handle.pause()
+                    except:
+                        pass
                     continue
 
                 torrent.progress = float(status.progress)

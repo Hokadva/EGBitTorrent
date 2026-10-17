@@ -17,6 +17,12 @@ class TorrentState(Enum):
     ERROR = "ERROR"
 
 
+class DuplicateTorrentError(Exception):
+    def __init__(self, torrent_id: str):
+        self.torrent_id = torrent_id
+        super().__init__(f"Torrent already exists: {torrent_id}")
+
+
 @dataclass
 class TorrentFileInfo:
     """Информация об одном файле внутри торрента (для вкладки «Файлы»)."""

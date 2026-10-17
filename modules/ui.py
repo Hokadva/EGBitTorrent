@@ -6,24 +6,64 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTabWidget, QStatusBar,
     QHeaderView, QAbstractItemView, QFileDialog, QMessageBox, QDialog,
     QDialogButtonBox, QGroupBox, QCheckBox, QGridLayout, QTreeWidget,
-    QTreeWidgetItem
+    QTextEdit
 )
 from modules.torrent import TorrentFile
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QColor
 from modules.widgets import TorrentFileTreeItem
 import os
 import datetime
 import qtawesome as qta
+from modules.torrent import TorrentState, DuplicateTorrentError
 from modules.themes import DARK_QSS
 from modules.validator import (
-    validate_save_path, validate_add_magnet, validate_add_file
+    validate_save_path, validate_magnet, validate_torrent_file
 )
 import libtorrent as lt
-from modules.core import human_size, get_free_disk_space
+from modules.core import (
+    human_size, get_free_disk_space, find_common_root,
+    new_root_if_necessary, smart_folder_creating, extract_magnet_name
+)
+
+
+class AddMagnetWindow(QDialog):
+    def __init__(self, parent: str):
+        super().__init__(parent)
+
+        self._build_ui()
+
+    def _build_ui(self):
+        self.setMinimumWidth(300)
+        self.setWindowTitle("Add torrent by magnet link")
+        magnet_main_layout = QVBoxLayout()
+        self.setLayout(magnet_main_layout)
+
+        self._link_field = QTextEdit()
+        self._link_field.clear()
+        self._link_field.setPlaceholderText("magnet:?xt=urn:btih:...")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok
+                            ).setText("Accept")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel
+                            ).setText("Cancel")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        magnet_main_layout.addWidget(self._link_field)
+        magnet_main_layout.addWidget(buttons)
+
+    @property
+    def magnet_link(self):
+        return self._link_field.toPlainText().strip()
 
 
 class AddTorrentWindow(QDialog):
-    def __init__(self, default_save_path: str, parent, torrent: str):
+    def __init__(
+            self, default_save_path: str, parent, torrent: str,
+            is_magnet: bool = False):
         super().__init__(parent)
 
         self.torrent = torrent
@@ -33,10 +73,16 @@ class AddTorrentWindow(QDialog):
 
         self._default_save_path = default_save_path
 
-        self._load_torrent_info()
-        self.build_ui()
-        self._update_free_space()
-        self._apply_torrent_info(self._torrent_info)
+        if not is_magnet:
+            self._load_torrent_info()
+            self.build_ui()
+            self._apply_torrent_info(self._torrent_info)
+            self._update_free_space()
+
+        else:
+            self._torrent_info = None
+            self.build_ui()
+            self._display_free_space()
 
     def build_ui(self):
         root = QVBoxLayout(self)
@@ -193,8 +239,9 @@ class AddTorrentWindow(QDialog):
         if path:
             self.path_edit.setText(path)
 
-    def _update_free_space(self):
+    def _display_free_space(self) -> int:
         path = self.path_edit.text().strip()
+
         if not path:
             self.free_space_label.setText("Free disc space: -")
             return
@@ -211,12 +258,20 @@ class AddTorrentWindow(QDialog):
             self.free_space_label.setText(
                 f"Free disc space: {human_size(free)}"
             )
-            if free < self._torrent_info.total_size():
-                self._change_apply_btn_status(False)
-                return
-
         else:
             self.free_space_label.setText("Free disc space: -")
+            self._change_apply_btn_status(False)
+
+        self._change_apply_btn_status(True)
+        return free
+
+    def _update_free_space(self):
+        free = self._display_free_space()
+
+        if free is None or self._torrent_info is None:
+            return
+
+        if free < self._torrent_info.total_size():
             self._change_apply_btn_status(False)
             return
 
@@ -279,12 +334,12 @@ class AddTorrentWindow(QDialog):
         folder_icon = qta.icon("fa5s.folder", color="#eab308")
         file_icon = qta.icon("fa5s.file", color="#9aa1ac")
 
-        paths = []
+        self._paths = []
         for i in range(n):
             full_path = storage.file_path(i).replace("\\", "/")
-            paths.append((full_path, storage.file_size(i)))
+            self._paths.append((full_path, storage.file_size(i)))
 
-        common_root = self._find_common_root([p for p, _ in paths])
+        common_root = find_common_root([p for p, _ in self._paths])
 
         def strip_root(p: str) -> str:
             if not common_root:
@@ -295,7 +350,7 @@ class AddTorrentWindow(QDialog):
 
         folder_nodes = {}
 
-        for full_path, size in paths:
+        for full_path, size in self._paths:
             rel_path = strip_root(full_path)
             parts = rel_path.split("/")
 
@@ -345,27 +400,6 @@ class AddTorrentWindow(QDialog):
         self.files_tree.setSortingEnabled(True)
         self.files_tree.sortByColumn(1, Qt.SortOrder.DescendingOrder)
 
-    def _find_common_root(self, paths):
-        """
-        Возвращает общий корневой путь для всех файлов, если он есть.
-        Например, ["a/b/c.mkv", "a/b/d.mkv"] → "a/b"
-                ["a/x.mkv", "b/y.mkv"] -> None
-                ["file.mkv"] -> None (один файл — нет корня)
-        """
-        if len(paths) <= 1:
-            return None
-
-        split_paths = [p.split("/") for p in paths]
-
-        common = []
-        for i, part in enumerate(split_paths[0][:-1]):
-            if all(len(p) > i + 1 and p[i] == part for p in split_paths):
-                common.append(part)
-            else:
-                break
-
-        return "/".join(common) if common else None
-
     def _accumulate_folder_sizes(self, item) -> int:
         total = 0
 
@@ -397,6 +431,20 @@ class AddTorrentWindow(QDialog):
     @property
     def is_create_folder(self) -> bool:
         return self.create_folder_cb.isChecked()
+
+    @property
+    def torrent_name(self) -> str:
+        if self._torrent_info is None:
+            return None
+
+        return self.get_torrent_info.name()
+
+    @property
+    def paths(self) -> list[str]:
+        if self._torrent_info is None:
+            return None
+
+        return self._paths
 
     @property
     def groups(self) -> list:
@@ -440,7 +488,8 @@ class UI(QMainWindow):
             return act
 
         self.act_add_magnet = tool_bar_add_action(
-            "fa5s.magnet", "Add by link", "#3b82f6"
+            "fa5s.magnet", "Add by link", "#3b82f6",
+            self.add_torrent_by_magnet
         )
         self.act_add_file = tool_bar_add_action(
             "fa5s.file-import", "Add by file", "#3b82f6",
@@ -613,6 +662,17 @@ class UI(QMainWindow):
         self._set_text(row, 6, torrent.downloaded_rate_human)
         self._set_text(row, 7, torrent.uploaded_rate_human)
 
+        if torrent.state == TorrentState.ERROR:
+            for c in range(8):
+                item = self.table.item(row, c)
+                if item:
+                    item.setForeground(QColor("#ef4444"))
+        else:
+            for c in range(8):
+                item = self.table.item(row, c)
+                if item:
+                    item.setForeground(QColor("#e6e8eb"))
+
     def _add_row(self, row: TorrentFile):
         r = self.table.rowCount()
         self.table.insertRow(r)
@@ -704,6 +764,26 @@ class UI(QMainWindow):
     def _get_default_savepath(self):
         return self.torrent_engine.default_savepath
 
+    def _on_delete_clicked(self):
+        torrent_id = self._get_selected_torrent_id()
+        if not torrent_id:
+            self._info("Select torrent.")
+            return
+
+        torrent = self.torrent_engine.get(torrent_id)
+        if torrent and torrent.state == TorrentState.DOWNLOADING:
+            if not self._confirm("The torrent is swinging. Stop and delete?"):
+                return
+
+        delete_files = self._confirm(
+            "Should also delete the downloaded files?")
+
+        try:
+            self.torrent_engine.remove(torrent_id, delete_files=delete_files)
+            self.refresh()
+        except Exception as e:
+            self._error("Couldn't delete", str(e))
+
     def refresh(self):
         torrents = self.torrent_engine.get_all_torrents()
         current_ids = {torrent.id for torrent in torrents}
@@ -764,6 +844,22 @@ class UI(QMainWindow):
             f"Uploading: {ulr}/s"
         )
 
+    def add_torrent_by_magnet(self):
+        magnet_window = AddMagnetWindow(self)
+        result = magnet_window.exec()
+
+        if result != QDialog.DialogCode.Accepted:
+            return
+
+        magnet_link = magnet_window.magnet_link
+
+        validation_res = validate_magnet(magnet_link)
+        if not validation_res.ok:
+            self._error("Magnet link error", validation_res.error)
+            return
+
+        self._create_torrent(magnet_link, True)
+
     def add_torent_by_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -774,18 +870,17 @@ class UI(QMainWindow):
         if not path:
             return
 
-        validate_res = validate_add_file(
-            path, self._get_default_savepath()
-        )
+        validate_res = validate_torrent_file(path)
 
         if not validate_res.ok:
-            QMessageBox.critical(
-                self, "Error", f"{validate_res.error}"
-            )
+            self._error(str(validate_res.error))
             return
 
+        self._create_torrent(path)
+
+    def _create_torrent(self, path: str, is_magnet: bool = False):
         add_torrent_window = AddTorrentWindow(
-            self._get_default_savepath(), self, path
+            self._get_default_savepath(), self, path, is_magnet
         )
 
         result = add_torrent_window.exec()
@@ -795,16 +890,114 @@ class UI(QMainWindow):
         save_path = add_torrent_window.save_path
         start_now = add_torrent_window.is_start_now
         create_folder = add_torrent_window.is_create_folder
+        paths = (
+            (("", 0),) if is_magnet else add_torrent_window.paths)
+        torrent_name = (
+            extract_magnet_name(path) if is_magnet
+            else add_torrent_window.torrent_name)
         groups = add_torrent_window.groups #That for future
 
         validate_res = validate_save_path(save_path)
         if not validate_res.ok:
-            QMessageBox.critical(
-                self, "Error", f"{validate_res.error}"
-            )
+            self._error(str(validate_res.error))
             return
 
-        self.torrent_engine.add_torrent_file(path, start_now, save_path)
+        save_path, is_creating = new_root_if_necessary(
+            paths, save_path, torrent_name, create_folder)
+
+        if is_creating:
+            save_path = smart_folder_creating(save_path)
+        try:
+            if is_magnet:
+                self.torrent_engine.add_magnet(
+                    path, save_path, start_now
+                )
+            else:
+                self.torrent_engine.add_torrent_file(
+                    path, save_path, start_now)
+            self.refresh()
+
+        except DuplicateTorrentError as err:
+            self._handle_duplicate(
+                path, save_path, start_now, err.torrent_id, is_magnet)
+
+        except Exception as e:
+            self._error("Adding error", str(e))
+
+    def _handle_duplicate(
+            self, path, save_path, start_now, torrent_id, is_magnet):
+        box = QMessageBox(self)
+        box.setWindowTitle("Duplicate")
+        box.setText("This torrent has already been added. What can I do?")
+        box.setIcon(QMessageBox.Icon.Question)
+
+        btn_open = box.addButton(
+            "Show in list", QMessageBox.ButtonRole.AcceptRole)
+        btn_new = box.addButton(
+            "Download in new folder", QMessageBox.ButtonRole.ActionRole)
+        btn_cancel = box.addButton(
+            "Cancel", QMessageBox.ButtonRole.RejectRole)
+
+        box.exec()
+
+        if box.clickedButton() == btn_open:
+            self._select_torrent_by_id(torrent_id)
+
+        elif box.clickedButton() == btn_new:
+            try:
+                self.torrent_engine.remove(torrent_id, delete_files=False)
+                self.refresh()
+            except Exception as e:
+                self._error("Error", f"Could not remove old torrent: {e}")
+                return
+
+            unique_path = smart_folder_creating(save_path)
+
+            try:
+                if is_magnet:
+                    self.torrent_engine.add_magnet(
+                        path, save_path, start_now
+                    )
+                else:
+                    self.torrent_engine.add_torrent_file(
+                        path, save_path=unique_path, start_now=start_now
+                    )
+                self.refresh()
+            except Exception as e:
+                self._error("Adding error", str(e))
+
+    def _select_torrent_by_id(self, torrent_id: str):
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is None:
+                continue
+
+            if item.data(Qt.ItemDataRole.UserRole) == torrent_id:
+                self.table.selectRow(row)
+                self.table.scrollToItem(item)
+                return
+
+        self._info("Torrent isn't in list.")
+
+    def _error(self, title: str, text: str = ""):
+        if text:
+            QMessageBox.critical(self, title, text)
+        else:
+            QMessageBox.critical(self, "Error", title)
+
+    def _info(self, text: str):
+        QMessageBox.information(self, "Information", text)
+
+    def _warn(self, text: str):
+        QMessageBox.warning(self, "Warning", text)
+
+    def _confirm(self, text: str, title: str = "Confirm") -> bool:
+        answer = QMessageBox.question(
+            self, title, text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def _apply_theme(self):
         ...

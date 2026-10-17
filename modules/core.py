@@ -1,10 +1,66 @@
 import os
 import shutil
-
+from typing import Optional
+import re
+from urllib.parse import parse_qs, unquote
 
 POSTFS = ("B", "KB", "MB", "GB", "TB")
 NUMS = "0123456789."
 
+
+def new_root_if_necessary(
+        paths, folder_path: str, torrent_name: str,
+        is_necessary: bool) -> str:
+    if not is_necessary or find_common_root([path for path, _ in paths]):
+        return (folder_path, False)
+
+    new_path = smart_folder_name_getter(
+        os.path.join(folder_path, torrent_name))
+
+    print(os.path.join(folder_path, torrent_name))
+    return (new_path, True)
+
+def smart_folder_name_getter(path) -> str:
+    if not os.path.exists(path):
+        return path
+
+    numx = 1
+    
+    while os.path.exists(path + f" ({numx})"):
+        numx += 1
+
+    return path
+
+def smart_folder_creating(path) -> str:
+    path = smart_folder_name_getter(
+        path
+    )
+
+    os.makedirs(path)
+
+    return path
+
+def find_common_root(paths) -> Optional[str]:
+    """
+    Возвращает общий корневой путь для всех файлов, если он есть.
+    Например, ["a/b/c.mkv", "a/b/d.mkv"] → "a/b"
+            ["a/x.mkv", "b/y.mkv"] -> None
+            ["file.mkv"] -> None (один файл — нет корня)
+    """
+    if len(paths) <= 1:
+        return None
+
+    split_paths = [p.split("/") for p in paths]
+
+    common = []
+
+    for i, part in enumerate(split_paths[0][:-1]):
+        if all(len(p) > i + 1 and p[i] == part for p in split_paths):
+            common.append(part)
+        else:
+            break
+
+    return "/".join(common) if common else None
 
 def approximate_byte_size(size: str) -> float:
     size = size.upper()
@@ -72,3 +128,30 @@ def get_free_disk_space(path: str) -> int:
 
     except Exception:
         return 0
+
+def extract_magnet_name(magnet: str) -> str:
+    try:
+        query = magnet.split("?", 1)[1]
+        params = parse_qs(query)
+        dn = params.get("dn", [""])[0]
+        if dn:
+            name = unquote(dn).strip()
+            return clear_filename(name)
+
+    except Exception:
+        pass
+
+    match = re.search(r"urn:btih:([a-fA-F0-9]{40})", magnet)
+    if match:
+        return f"Torrent_{match.group(1)[:12].lower()}"
+
+    return "New_torrent"
+
+def clear_filename(name: str) -> str:
+    """Убирает символы, запрещённые в именах файлов Windows."""
+    forbidden = '<>:"/\\|?*'
+    for ch in forbidden:
+        name = name.replace(ch, "_")
+
+    name = name.rstrip(" .")
+    return name[:120] or "Torrent"

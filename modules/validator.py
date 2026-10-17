@@ -37,6 +37,8 @@ def validate_magnet(url: str) -> ValidationResult:
     except:
         return ValidationResult(False, f"libtorrent can't parse magnet url")
 
+    return ValidationResult(True)
+
 def validate_torrent_file(path: str) -> ValidationResult:
     if not path or not path.strip():
         return ValidationResult(False, "The file path isn't specified")
@@ -91,17 +93,3 @@ def validate_save_path(path: str) -> ValidationResult:
         return ValidationResult(False, "No rights to write in that folder")
 
     return ValidationResult(True)
-
-def validate_add_magnet(url: str, save_path: str) -> ValidationResult:
-    result = validate_magnet(url)
-    if not result.ok:
-        return result
-
-    return validate_save_path(save_path)
-
-def validate_add_file(path: str, save_path: str) -> ValidationResult:
-    result = validate_torrent_file(path)
-    if not result.ok:
-        return result
-
-    return validate_save_path(save_path)
