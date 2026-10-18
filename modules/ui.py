@@ -22,12 +22,49 @@ from modules.validator import (
 import libtorrent as lt
 from modules.core import (
     human_size, get_free_disk_space, find_common_root,
-    new_root_if_necessary, smart_folder_creating, extract_magnet_name
+    new_root_if_necessary, smart_folder_creating, extract_magnet_name,
+    human_rate, colorize, Colors, folder_remove
 )
 
 
+class RemoveTorrent(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self._build_ui()
+
+    def _build_ui(self):
+        self.setMinimumSize(200, 100)
+        self.setWindowTitle("Remove torrent")
+        remove_torrent_layout = QVBoxLayout()
+        self.setLayout(remove_torrent_layout)
+
+        confirm_label = QLabel(
+            "Do you really want to delete these torrents")
+        self._delete_file_checkbox = QCheckBox("Also delete the uploaded files?")
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok
+                            ).setText("Accept")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel
+                            ).setText("Cancel")
+
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        remove_torrent_layout.addWidget(confirm_label)
+        remove_torrent_layout.addWidget(self._delete_file_checkbox)
+        remove_torrent_layout.addWidget(buttons)
+
+    @property
+    def is_remove_files(self) -> bool:
+        return self._delete_file_checkbox.isChecked()
+
+
 class AddMagnetWindow(QDialog):
-    def __init__(self, parent: str):
+    def __init__(self, parent):
         super().__init__(parent)
 
         self._build_ui()
@@ -248,7 +285,7 @@ class AddTorrentWindow(QDialog):
 
         if not os.path.exists(path) or not os.path.isdir(path):
             self.free_space_label.setText(
-                f"Path doesn't exists: {path}"
+                colorize(f"Path doesn't exists: {path}", Colors.error_red)
             )
             self._change_apply_btn_status(False)
             return
@@ -496,13 +533,13 @@ class UI(QMainWindow):
             self.add_torent_by_file
         )
         self.act_resume = tool_bar_add_action(
-            "fa5s.play", "Run", "#22c55e"
+            "fa5s.play", "Run", "#22c55e", self.run_current_torrent
         )
         self.act_pause = tool_bar_add_action(
-            "fa5s.pause", "Stop", "#eab308"
+            "fa5s.pause", "Stop", "#eab308", self.pause_current_torrent
         )
         self.act_delete = tool_bar_add_action(
-            "fa5s.trash-alt", "Remove torrent", "#ef4444"
+            "fa5s.trash-alt", "Remove torrent", "#ef4444", self.remove_torrent
         )
 
         main_tool_bar.addSeparator()
@@ -582,6 +619,12 @@ class UI(QMainWindow):
         root.addWidget(splitter, 1)
         self.setCentralWidget(central)
 
+    def _add_group(self, name):
+        item = QListWidgetItem(name)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Checked)
+        self.groups_list.addItem(item)
+
     def _build_group_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -598,12 +641,6 @@ class UI(QMainWindow):
         self.groups_list.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
         )
-
-        for name in ["All", "Films", "Music", "Work", "Others"]:
-            item = QListWidgetItem(name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
-            self.groups_list.addItem(item)
 
         layout.addWidget(self.groups_list, 1)
 
@@ -624,7 +661,7 @@ class UI(QMainWindow):
         table.setShowGrid(False)
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
@@ -834,13 +871,13 @@ class UI(QMainWindow):
     def _update_statusbar(self, torrents):
         total = len(torrents)
         active = sum(1 for torrent in torrents if torrent.is_active)
-        dlr = sum(torrent.downloading_rate for torrent in torrents)
-        ulr = sum(torrent.upload_rate for torrent in torrents)
+        dlr = human_rate(sum(torrent.downloading_rate for torrent in torrents))
+        ulr = human_rate(sum(torrent.upload_rate for torrent in torrents))
 
         self.statusBar().showMessage(
             f"Total: {total} | "
             f"Active: {active} | "
-            f"↓ Downloading speed: {dlr}/s | "
+            f"↓ Downloading speed: {dlr} | "
             f"Uploading: {ulr}/s"
         )
 
@@ -905,9 +942,9 @@ class UI(QMainWindow):
         save_path, is_creating = new_root_if_necessary(
             paths, save_path, torrent_name, create_folder)
 
-        if is_creating:
-            save_path = smart_folder_creating(save_path)
         try:
+            if is_creating:
+                save_path = smart_folder_creating(save_path)
             if is_magnet:
                 self.torrent_engine.add_magnet(
                     path, save_path, start_now
@@ -915,17 +952,23 @@ class UI(QMainWindow):
             else:
                 self.torrent_engine.add_torrent_file(
                     path, save_path, start_now)
+
             self.refresh()
 
         except DuplicateTorrentError as err:
+            if is_creating:
+                folder_remove(save_path)
             self._handle_duplicate(
                 path, save_path, start_now, err.torrent_id, is_magnet)
 
         except Exception as e:
+            if is_creating:
+                folder_remove(save_path)
             self._error("Adding error", str(e))
 
     def _handle_duplicate(
-            self, path, save_path, start_now, torrent_id, is_magnet):
+            self, path: str, save_path: str, start_now: bool,
+            torrent_id: str, is_magnet: bool):
         box = QMessageBox(self)
         box.setWindowTitle("Duplicate")
         box.setText("This torrent has already been added. What can I do?")
@@ -998,6 +1041,49 @@ class UI(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         return answer == QMessageBox.StandardButton.Yes
+
+    def _manipulate_torrent(self, method: str, func: callable = None):
+        current_torrents = self.table.selectedItems()
+        if not current_torrents:
+            return
+
+        if func:
+            result, params = func()
+            if not result:
+                return
+
+        for el in current_torrents:
+            if el.column() != 0:
+                continue
+
+            torrent_id = el.data(Qt.ItemDataRole.UserRole)
+            if not torrent_id:
+                continue
+
+            if func and params:
+                getattr(self.torrent_engine, method)(torrent_id, params)
+                continue
+
+            getattr(self.torrent_engine, method)(torrent_id)
+
+    def run_current_torrent(self):
+        self._manipulate_torrent("resume")
+
+    def pause_current_torrent(self):
+        self._manipulate_torrent("pause")
+
+    def remove_torrent(self):
+        self._manipulate_torrent(
+            "remove", self._remove_torrent_window_create)
+
+    def _remove_torrent_window_create(self) -> tuple[bool, bool]:
+        remove_window = RemoveTorrent(self)
+        result = remove_window.exec()
+
+        if result != QDialog.DialogCode.Accepted:
+            return (False, 0)
+
+        return (True, remove_window.is_remove_files)
 
     def _apply_theme(self):
         ...

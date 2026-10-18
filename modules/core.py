@@ -2,25 +2,44 @@ import os
 import shutil
 from typing import Optional
 import re
+from enum import Enum
 from urllib.parse import parse_qs, unquote
 
 POSTFS = ("B", "KB", "MB", "GB", "TB")
 NUMS = "0123456789."
 
 
+class Colors(str, Enum):
+    red = "#FF0000"
+    error_red = "#EF4444"
+    orange = "#FFA500"
+    green = "#00FF00"
+    succes_green = "#22C55E"
+
+
+def colorize(text: str, color: Colors) -> str:
+    return f"<span style='color:{color}'>{text}</span>"
+
+def folder_remove(path: str) -> str:
+    try:
+        os.rmdir(path)
+    except Exception:
+        pass
+
+    return path
+
 def new_root_if_necessary(
         paths, folder_path: str, torrent_name: str,
         is_necessary: bool) -> str:
-    if not is_necessary or find_common_root([path for path, _ in paths]):
+    if not is_necessary:
         return (folder_path, False)
 
     new_path = smart_folder_name_getter(
         os.path.join(folder_path, torrent_name))
 
-    print(os.path.join(folder_path, torrent_name))
     return (new_path, True)
 
-def smart_folder_name_getter(path) -> str:
+def smart_folder_name_getter(path: str) -> str:
     if not os.path.exists(path):
         return path
 
@@ -29,13 +48,12 @@ def smart_folder_name_getter(path) -> str:
     while os.path.exists(path + f" ({numx})"):
         numx += 1
 
-    return path
+    return path + f" ({numx})"
 
 def smart_folder_creating(path) -> str:
     path = smart_folder_name_getter(
         path
     )
-
     os.makedirs(path)
 
     return path

@@ -7,7 +7,7 @@ import time
 
 from modules.torrent import (
     TorrentFile, DuplicateTorrentError, TorrentFileInfo, TorrentState)
-from modules.core import extract_magnet_name
+from modules.core import extract_magnet_name, find_common_root
 
 
 class TorrentEngine:
@@ -86,14 +86,24 @@ class TorrentEngine:
         params = lt.parse_magnet_uri(url)
         params.save_path = save_path
 
+        torrent_id = str(params.info_hashes.v1)
+        self._duplicate_check(torrent_id)
+
         with self._lock:
             handle = self._session.add_torrent(params)
 
-        torrent_id = str(handle.info_hash())
         self._register(
             torrent_id, handle, extract_magnet_name(url), save_path, start_now)
 
         return torrent_id
+
+    def get_handle(self, torrent_id: str):
+        with self._lock:
+            return self._handles.get(torrent_id)
+
+    def _duplicate_check(self, torrent_id: str):
+        if torrent_id in self._torrents:
+            raise DuplicateTorrentError(torrent_id)
 
     def add_torrent_file(self, path, save_path = None, start_now: bool = True):
         if not os.path.isfile(path):
@@ -102,23 +112,15 @@ class TorrentEngine:
         save_path = save_path or self._default_savepath
         info = lt.torrent_info(path)
 
+        torrent_id = str(info.info_hashes().v1)
+        self._duplicate_check(torrent_id)
+
         params = lt.add_torrent_params()
         params.ti = info
         params.save_path = save_path
 
         with self._lock:
             handle = self._session.add_torrent(params)
-
-        torrent_id = str(handle.info_hash())
-
-        if torrent_id in self._torrents:
-            try:
-                self._session.remove_torrent(handle)
-
-            except Exception:
-                pass
-
-            raise DuplicateTorrentError(torrent_id)
 
         self._register(torrent_id, handle, name=info.name(),
                     save_path=save_path, start_now=start_now)
@@ -167,7 +169,7 @@ class TorrentEngine:
                 return
 
             torrent = self._torrents.get(torrent_id)
-            if torrent is None:
+            if torrent is None or torrent.state == TorrentState.DOWNLOADING:
                 return
 
             self._queued.append(torrent_id)
@@ -197,6 +199,23 @@ class TorrentEngine:
             self._queued = [tid for tid in self._queued if tid != torrent_id]
 
             self._start_next()
+
+    def move_torrent(self, source_id: str, target_id: str):
+        with self._lock:
+            if not(source_id in self._torrents and target_id in self._torrents):
+                return
+
+            items = list(self._torrents.items())
+            source_idx = next(
+                nm for nm, (idx, it) in enumerate(items) if idx == source_id)
+            target_idx = next(
+                nm for nm, (idx, it) in enumerate(items) if idx == target_id)
+
+            item = items.pop(source_idx)
+            if source_idx < target_idx:
+                target_idx -= 1
+            items.insert(target_idx, item)
+            self._torrents = dict(items)
 
     def update(self):
         with self._lock:
