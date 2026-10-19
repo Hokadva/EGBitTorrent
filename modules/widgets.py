@@ -1,6 +1,8 @@
-from PyQt6.QtWidgets import QTreeWidgetItem, QTableWidget, QAbstractItemView
-from PyQt6.QtCore import Qt, pyqtSignal
-from modules.core import approximate_byte_size
+from PyQt6.QtWidgets import QTreeWidgetItem, QTableWidgetItem
+from PyQt6.QtCore import Qt
+from modules.core import (
+    approximate_byte_size
+)
 
 
 class TorrentFileTreeItem(QTreeWidgetItem):
@@ -31,3 +33,36 @@ class TorrentFileTreeItem(QTreeWidgetItem):
         else:
             return approximate_byte_size(
                 self.text(1)) < approximate_byte_size(other.text(1))
+
+
+class TorrentFileItem(QTableWidgetItem):
+    def __init__(self, text: str, sort_value):
+        super().__init__(text)
+        if hasattr(sort_value, "value"):
+            self._sort_value = sort_value.value
+        else:
+            self._sort_value = sort_value
+
+    def __lt__(self, other):
+        table = self.tableWidget()
+        if table is None:
+            return super().__lt__(other)
+
+        that = self._sort_value
+        other = other._sort_value
+
+        column = table.horizontalHeader().sortIndicatorSection()
+
+        if column in (1, 2, 4, 5, 6, 7):
+            try:
+                return float(that) < float(other)
+            except Exception:
+                return True
+
+        try:
+            return that.text().lower() < other.text().lower()
+        except Exception:
+            try:
+                return that.lower() < other.lower()
+            except Exception:
+                return str(that).lower() < str(other).lower()

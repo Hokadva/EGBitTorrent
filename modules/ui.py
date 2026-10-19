@@ -6,16 +6,16 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QTabWidget, QStatusBar,
     QHeaderView, QAbstractItemView, QFileDialog, QMessageBox, QDialog,
     QDialogButtonBox, QGroupBox, QCheckBox, QGridLayout, QTreeWidget,
-    QTextEdit
+    QTextEdit, QSizePolicy
 )
 from modules.torrent import TorrentFile
 from PyQt6.QtGui import QAction, QColor
-from modules.widgets import TorrentFileTreeItem
+from modules.widgets import TorrentFileTreeItem, TorrentFileItem
 import os
 import datetime
 import qtawesome as qta
 from modules.torrent import TorrentState, DuplicateTorrentError
-from modules.themes import DARK_QSS
+from modules.themes import THEMES
 from modules.validator import (
     validate_save_path, validate_magnet, validate_torrent_file
 )
@@ -510,6 +510,7 @@ class UI(QMainWindow):
         self._build_tool_bar()
         self._build_statusbar()
         self._build_central_menu()
+        self._apply_theme(THEMES["maroon"])
 
     def _build_tool_bar(self):
         main_tool_bar = QToolBar()
@@ -571,7 +572,6 @@ class UI(QMainWindow):
         root.setSpacing(0)
 
         search_bar = QWidget()
-        search_bar.setStyleSheet("background-color: #20242b;")
         sb_layout = QHBoxLayout(search_bar)
         sb_layout.setContentsMargins(12, 8, 12, 8)
         sb_layout.setSpacing(8)
@@ -660,10 +660,15 @@ class UI(QMainWindow):
         table.verticalHeader().setVisible(False)
         table.setShowGrid(False)
         table.setAlternatingRowColors(True)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setFocusPolicy(
+            Qt.FocusPolicy.NoFocus)
+        table.setSortingEnabled(True)
 
         header = table.horizontalHeader()
         header.setStretchLastSection(False)
@@ -674,31 +679,18 @@ class UI(QMainWindow):
         return table
 
     def _update_row(self, row: int, torrent: TorrentFile):
-        name_item = self.table.item(row, 0)
+        rows_to_update = [
+            (0, 'name', True),
+            (1, 'byte_size', True),
+            (2, 'progress', False),
+            (3, 'state', True),
+            (4, 'seeds', True),
+            (5, 'peers', True),
+            (6, 'downloading_rate', True),
+            (7, 'upload_rate', True),
+        ]
 
-        self._set_text(row, 0, torrent.name)
-
-        name_item.setData(Qt.ItemDataRole.UserRole, torrent.id)
-
-        self._set_text(row, 1, torrent.size_human)
-
-        wrap = self.table.cellWidget(row, 2)
-        if wrap:
-            progress_bar = wrap.findChild(QProgressBar)
-            if progress_bar:
-                progress_bar.setValue(int(torrent.progress * 100))
-
-        state_item = self.table.item(row, 3)
-        state_text = torrent.state.value
-        if state_item.text() != state_item:
-            state_item.setText(state_text)
-
-        self._set_text(row, 4, self._row_seeds_element(torrent))
-        self._set_text(row, 5, self._row_peers_element(torrent))
-
-        self._set_text(row, 6, torrent.downloaded_rate_human)
-        self._set_text(row, 7, torrent.uploaded_rate_human)
-
+        self._update_row_items(row, torrent, rows_to_update)
         if torrent.state == TorrentState.ERROR:
             for c in range(8):
                 item = self.table.item(row, c)
@@ -710,32 +702,78 @@ class UI(QMainWindow):
                 if item:
                     item.setForeground(QColor("#e6e8eb"))
 
+    def _update_row_items(self, row: int, torrent: TorrentFile, rows: list):
+        """
+        Обновляет ячейки таблицы на основе переданного списка настроек.
+        """
+        text_formatters = {
+            'name': lambda t: t.name,
+            'byte_size': lambda t: t.size_human,
+            'state': lambda t: t.state.value,
+            'seeds': lambda t: self._row_seeds_element(t),
+            'peers': lambda t: self._row_peers_element(t),
+            'downloading_rate': lambda t: t.downloaded_rate_human,
+            'upload_rate': lambda t: t.uploaded_rate_human,
+        }
+
+        for col, attr_name, update_text in rows:
+            if col == 2:
+                wrap = self.table.cellWidget(row, 2)
+                if wrap:
+                    progress_bar = wrap.findChild(QProgressBar)
+                    if progress_bar:
+                        progress_bar.setValue(int(torrent.progress * 100))
+                
+                item = self.table.item(row, 2)
+                if isinstance(item, TorrentFileItem):
+                    item._sort_value = torrent.progress
+                continue
+
+            item = self.table.item(row, col)
+            if not isinstance(item, TorrentFileItem):
+                continue
+
+            if update_text and attr_name in text_formatters:
+                item.setText(text_formatters[attr_name](torrent))
+
+            item._sort_value = getattr(torrent, attr_name)
+
+            if col == 0:
+                item.setData(Qt.ItemDataRole.UserRole, torrent.id)
+
     def _add_row(self, row: TorrentFile):
         r = self.table.rowCount()
         self.table.insertRow(r)
 
-        name_item = QTableWidgetItem(row.name)
+        name_item = TorrentFileItem(row.name, row.name)
         name_item.setData(Qt.ItemDataRole.UserRole, row.id)
         self.table.setItem(r, 0, name_item)
 
-        self.table.setItem(r, 1, QTableWidgetItem(row.size_human))
+        self.table.setItem(r, 1, TorrentFileItem(row.size_human, row.byte_size))
+        self.table.setItem(r, 2, TorrentFileItem("", row.progress))
 
         pb = QProgressBar()
         pb.setRange(0, 100)
-        pb.setValue(int(row.progress * 1000))
-        pb.setTextVisible(False)
-        pb.setFixedHeight(6)
+        pb.setValue(int(row.progress * 100))
+        pb.setTextVisible(True)
+        pb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
         wrap = QWidget()
         wl = QHBoxLayout(wrap)
-        wl.setContentsMargins(6, 10, 6, 10)
+        wl.setContentsMargins(4, 4, 4, 4) 
         wl.addWidget(pb)
         self.table.setCellWidget(r, 2, wrap)
-
-        self.table.setItem(r, 3, QTableWidgetItem(row.state.value))
-        self.table.setItem(r, 4, QTableWidgetItem(self._row_seeds_element(row)))
-        self.table.setItem(r, 5, QTableWidgetItem(self._row_peers_element(row)))
-        self.table.setItem(r, 6, QTableWidgetItem(row.downloaded_rate_human))
-        self.table.setItem(r, 7, QTableWidgetItem(row.uploaded_rate_human))
+        self.table.setItem(
+            r, 3, TorrentFileItem(row.state.value, row.state.value))
+        self.table.setItem(
+            r, 4, TorrentFileItem(self._row_seeds_element(row), row.seeds))
+        self.table.setItem(
+            r, 5, TorrentFileItem(self._row_peers_element(row), row.peers))
+        self.table.setItem(
+            r, 6, TorrentFileItem(row.downloaded_rate_human, row.downloading_rate))
+        self.table.setItem(
+            r, 7, TorrentFileItem(row.uploaded_rate_human, row.upload_rate))
 
     def _build_details_panel(self):
         tabs = QTabWidget()
@@ -830,7 +868,8 @@ class UI(QMainWindow):
             if item is None:
                 continue
 
-            torrent_id = item.data(Qt.ItemDataRole.UserRole)
+            torrent_id = item.data(
+                Qt.ItemDataRole.UserRole)
             if torrent_id not in current_ids:
                 self.table.removeRow(row)
 
@@ -1085,8 +1124,8 @@ class UI(QMainWindow):
 
         return (True, remove_window.is_remove_files)
 
-    def _apply_theme(self):
-        ...
+    def _apply_theme(self, theme: str):
+        self.setStyleSheet(theme)
 
     def _toggle_theme(self):
         ...
