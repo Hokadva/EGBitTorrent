@@ -493,11 +493,46 @@ class AddTorrentWindow(QDialog):
 
 
 class UI(QMainWindow):
+    DETAILS_LEFT = [
+        ("name", "Name"),
+        ("size", "Size"),
+        ("up_speed", "↑ Speed"),
+        ("uploading", "Uploading"),
+    ]
+    DETAILS_MID = [
+        ("status", "Status"),
+        ("progress", "Progres"),
+        ("given", "Given"),
+        ("up_speed2", "↓ Speed"),
+    ]
+    DETAILS_RIGHT = [
+        ("seeds", "Sids"),
+        ("peers", "Pirs"),
+        ("folder", "Folder"),
+        ("added", "Add on"),
+    ]
+
+    INITIAL_VALUES = {
+        "name": "-",
+        "size": "-",
+        "up_speed": "-",
+        "uploading": "-",
+        "status": "-",
+        "progress": "-",
+        "given": "-",
+        "up_speed2": "-",
+        "seeds": "-",
+        "peers": "-",
+        "folder": "-",
+        "added": "-",
+    }
+
     def __init__(self, torrent_engine):
         super().__init__()
 
         self.torrent_engine = torrent_engine
-        self.theme = "dark"
+        self.theme = "maroon"
+        self._current_selected_id = None
 
         self._build_ui()
 
@@ -510,7 +545,7 @@ class UI(QMainWindow):
         self._build_tool_bar()
         self._build_statusbar()
         self._build_central_menu()
-        self._apply_theme(THEMES["maroon"])
+        self._apply_theme(THEMES[self.theme])
 
     def _build_tool_bar(self):
         main_tool_bar = QToolBar()
@@ -579,6 +614,7 @@ class UI(QMainWindow):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Enter torrent name...")
         self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._apply_filter)
         self.search_edit.addAction(
             qta.icon("fa5s.search", color="#6b7280"), QLineEdit.ActionPosition.LeadingPosition
         )
@@ -589,6 +625,7 @@ class UI(QMainWindow):
             ["All", "Downloading", "Uploading",
              "Finished", "Stopped", "Error"]
         )
+        self.filter_combo.currentTextChanged.connect(self._apply_filter)
         sb_layout.addWidget(self.filter_combo)
 
         root.addWidget(search_bar)
@@ -602,7 +639,7 @@ class UI(QMainWindow):
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         right_splitter.setHandleWidth(1)
 
-        self.table = self._build_table()
+        self._build_table()
         right_splitter.addWidget(self.table)
 
         self.details = self._build_details_panel()
@@ -655,28 +692,29 @@ class UI(QMainWindow):
     def _build_table(self):
         columns = ["Name", "Size", "Progress", "Status",
                    "Sids", "Pirs", "↓ Speed", "↑ Speed"]
-        table = QTableWidget(0, len(columns))
-        table.setHorizontalHeaderLabels(columns)
-        table.verticalHeader().setVisible(False)
-        table.setShowGrid(False)
-        table.setAlternatingRowColors(True)
-        table.setSelectionBehavior(
+        self.table = QTableWidget(0, len(columns))
+        self.table.setHorizontalHeaderLabels(columns)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(
+        self.table.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
-        table.setEditTriggers(
+        self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setFocusPolicy(
+        self.table.setFocusPolicy(
             Qt.FocusPolicy.NoFocus)
-        table.setSortingEnabled(True)
+        self.table.setSortingEnabled(True)
+        self.table.itemSelectionChanged.connect(self._on_item_changed)
 
-        header = table.horizontalHeader()
+        header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for i in range(1, len(columns)):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
 
-        return table
+        return self.table
 
     def _update_row(self, row: int, torrent: TorrentFile):
         rows_to_update = [
@@ -731,7 +769,8 @@ class UI(QMainWindow):
 
             item = self.table.item(row, col)
             if not isinstance(item, TorrentFileItem):
-                continue
+                item = TorrentFileItem("", 0)
+                self.table.setItem(row, col, item)
 
             if update_text and attr_name in text_formatters:
                 item.setText(text_formatters[attr_name](torrent))
@@ -775,44 +814,73 @@ class UI(QMainWindow):
         self.table.setItem(
             r, 7, TorrentFileItem(row.uploaded_rate_human, row.upload_rate))
 
+    def _build_info_block(self, config, values, storage):
+        box = QWidget()
+        vl = QVBoxLayout(box)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(4)
+
+        for key, label_text in config:
+            value = values.get(key, "-") 
+
+            line = QLabel()
+            line.setTextFormat(Qt.TextFormat.RichText)
+            line.setText(f"{label_text} {value}")
+            vl.addWidget(line)
+            storage.append((key, label_text, line))
+
+        return box
+
+    def _update_details(self, torrent: TorrentFile):
+        if not torrent or self.table.rowCount() == 0:
+            new_values = self.INITIAL_VALUES
+
+        else:
+            new_values = {
+                "name": torrent.name,
+                "size": torrent.size_human,
+                "up_speed": torrent.uploaded_rate_human,
+                "uploading": human_size(torrent.upload_bytes),
+                "status": torrent.state.value,
+                "progress": str(int(torrent.progress * 100)),
+                "given": human_size(torrent.downloading_bytes),
+                "up_speed2": torrent.downloaded_rate_human,
+                "seeds": self._row_seeds_element(torrent),
+                "peers": self._row_peers_element(torrent),
+                "folder": torrent.save_path,
+                "added": datetime.datetime.fromtimestamp(torrent.added_at
+                                                        ).strftime(
+                                                            "%d.%m.%Y %H:%M"),
+            }
+
+        for label_list in (
+            self.left_labels, self.mid_labels, self.right_labels):
+            for key, lable_text, label_widget in label_list:
+                value = new_values.get(key, "-")
+                label_widget.setText(
+                    f"{lable_text} {value}"
+                )
+
     def _build_details_panel(self):
-        tabs = QTabWidget()
-        tabs.setDocumentMode(True)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
 
         overview = QWidget()
         ov = QHBoxLayout(overview)
         ov.setContentsMargins(16, 12, 16, 12)
         ov.setSpacing(32)
 
-        def info_block(items):
-            box = QWidget()
-            vl = QVBoxLayout(box)
-            vl.setContentsMargins(0, 0, 0, 0)
-            vl.setSpacing(4)
-            for label, value in items:
-                line = QLabel(f"<span style='color:#6b7280'>{label}:</span> "
-                              f"<span style='color:#e6e8eb'>{value}</span>")
-                vl.addWidget(line)
-            return box
+        self.left_labels = []
+        self.mid_labels = []
+        self.right_labels = []
 
-        left = info_block([
-            ("Name", ""),
-            ("Size", ""),
-            ("↑ Speed", ""),
-            ("Uploading", ""),
-        ])
-        mid = info_block([
-            ("Status", ""),
-            ("Progres", ""),
-            ("Given", ""),
-            ("↑ Speed", ""),
-        ])
-        right = info_block([
-            ("Sids", ""),
-            ("Pirs", ""),
-            ("Folder", ""),
-            ("Add on", ""),
-        ])
+        left = self._build_info_block(
+            self.DETAILS_LEFT, self.INITIAL_VALUES, self.left_labels)
+        mid = self._build_info_block(
+            self.DETAILS_MID, self.INITIAL_VALUES, self.mid_labels)
+        right = self._build_info_block(
+            self.DETAILS_RIGHT, self.INITIAL_VALUES, self.right_labels)
+
         ov.addWidget(left, 1)
         ov.addWidget(mid, 1)
         ov.addWidget(right, 1)
@@ -823,18 +891,36 @@ class UI(QMainWindow):
         )
         files.verticalHeader().setVisible(False)
         files.setShowGrid(False)
-        files.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        files.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
         for i in range(1, 4):
-            files.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+            files.horizontalHeader().setSectionResizeMode(
+                i, QHeaderView.ResizeMode.ResizeToContents)
 
-        tabs.addTab(overview, qta.icon("fa5s.info-circle", color="#9aa1ac"), "More")
-        tabs.addTab(files, qta.icon("fa5s.folder-open", color="#9aa1ac"), "Files")
-        return tabs
+        self.tabs.addTab(overview, qta.icon("fa5s.info-circle", color="#9aa1ac"), "More")
+        self.tabs.addTab(files, qta.icon("fa5s.folder-open", color="#9aa1ac"), "Files")
+        return self.tabs
 
     def _build_statusbar(self):
         sb = QStatusBar()
         self.setStatusBar(sb)
         sb.showMessage("Total: 0 │ Active: 0 │ ↓ 0 MB/s | ↑ 0 MB/s │ DHT: 0")
+
+    def _on_item_changed(self):
+        current_item = self.table.currentItem()
+        if current_item is None:
+            return
+
+        torrent_id = self.table.item(current_item.row(), 0).data(
+            Qt.ItemDataRole.UserRole
+        )
+        self._current_selected_id = torrent_id
+        if not torrent_id:
+            return
+
+        torrent = self.torrent_engine.get(torrent_id)
+        if torrent:
+            self._update_details(torrent)
 
     def _get_default_savepath(self):
         return self.torrent_engine.default_savepath
@@ -859,7 +945,29 @@ class UI(QMainWindow):
         except Exception as e:
             self._error("Couldn't delete", str(e))
 
+    def _apply_filter(self):
+        search_text = self.search_edit.text().strip().lower()
+        filter_text = self.filter_combo.currentText()
+
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if not item:
+                continue
+
+            torrent_id = item.data(Qt.ItemDataRole.UserRole)
+            torrent = self.torrent_engine.get(torrent_id)
+            if not torrent:
+                return
+
+            match_search = search_text in torrent.name.lower()
+            match_filter = (
+                filter_text.upper() == torrent.state.value or
+                filter_text == "All"
+            )
+            self.table.setRowHidden(row, not (match_filter and match_search))
+
     def refresh(self):
+        self.table.setSortingEnabled(False)
         torrents = self.torrent_engine.get_all_torrents()
         current_ids = {torrent.id for torrent in torrents}
 
@@ -881,6 +989,20 @@ class UI(QMainWindow):
                 self._add_row(torrent)
 
         self._update_statusbar(torrents)
+        if self._current_selected_id:
+            torrent = self.torrent_engine.get(self._current_selected_id)
+            if torrent:
+                self._update_details(torrent)
+            else:
+                self._current_selected_id = None
+                self._update_details(None)
+        else:
+            if self.table.rowCount() == 0:
+                self._update_details(None)
+
+        self._apply_filter()
+
+        self.table.setSortingEnabled(True)
 
     def _index_row_by_id(self):
         result = {}
@@ -893,11 +1015,15 @@ class UI(QMainWindow):
 
         return result
 
-    def _row_seeds_element(self, torrent):
-        return f"{torrent.seeds} ({torrent.seeds_total if torrent.seeds_total > 0 else 0})"
+    def _peers_seeds_constructor(self, attr: str, torrent: TorrentFile) -> str:
+        total = getattr(torrent, attr + "_total")
+        return f"{getattr(torrent, attr)} ({total if total > 0 else 0})"
 
-    def _row_peers_element(self, torrent):
-        return f"{torrent.peers} ({torrent.peers_total if torrent.peers_total > 0 else 0})"
+    def _row_seeds_element(self, torrent: TorrentFile) -> str:
+        return self._peers_seeds_constructor("seeds", torrent)
+
+    def _row_peers_element(self, torrent: TorrentFile) -> str:
+        return self._peers_seeds_constructor("peers", torrent)
 
     def _set_text(self, row: int, column: int, text: str):
         item = self.table.item(row, column)

@@ -87,3 +87,6 @@ class TorrentFile:
                               TorrentState.SEEDING,
                               TorrentState.CHECKING,
                               TorrentState.METADATA)
+
+    def __str__(self):
+        return f"id: {self.id}, name: {self.name}"

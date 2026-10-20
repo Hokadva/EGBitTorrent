@@ -24,6 +24,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #2d2d2d; border: 1px solid #3c3c3c; padding: 5px 10px; }
 QTabBar::tab:selected { background: #1e1e1e; border-bottom: 1px solid #1e1e1e; }
 QStatusBar { background: #007acc; color: #ffffff; }
+QComboBox QAbstractItemView {font-size: 12px; }
 """
 
 WHITE_THEME = """
@@ -52,6 +53,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #f0f0f0; border: 1px solid #cccccc; padding: 5px 10px; }
 QTabBar::tab:selected { background: #ffffff; border-bottom: 1px solid #ffffff; }
 QStatusBar { background: #007acc; color: #ffffff; }
+QComboBox QAbstractItemView {font-size: 12px; }
 """
 
 BLACK_THEME = """
@@ -80,6 +82,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #111111; border: 1px solid #333333; padding: 5px 10px; color: #ffffff;}
 QTabBar::tab:selected { background: #000000; border-bottom: 1px solid #000000; }
 QStatusBar { background: #111111; color: #ffffff; border-top: 1px solid #333333; }
+QComboBox QAbstractItemView {font-size: 12px; }
 """
 
 BLACK_BLUE_THEME = """
@@ -108,6 +111,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #323232; border: 1px solid #444444; padding: 5px 10px; }
 QTabBar::tab:selected { background: #2b2b2b; border-bottom: 1px solid #2b2b2b; }
 QStatusBar { background: #3daee9; color: #ffffff; }
+QComboBox QAbstractItemView {font-size: 12px; }
 """
 
 BLACK_RED_THEME = """
@@ -136,6 +140,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #333333; border: 1px solid #444444; padding: 5px 10px; }
 QTabBar::tab:selected { background: #222222; border-bottom: 1px solid #222222; }
 QStatusBar { background: #333333; color: #f8f8f2; border-top: 1px solid #ff5555; }
+QComboBox QAbstractItemView {font-size: 12px; }
 """
 
 MARIN_ORANGE_THEME = """
@@ -164,6 +169,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #073642; border: 1px solid #002b36; padding: 5px 10px; color: #839496;}
 QTabBar::tab:selected { background: #002b36; border-bottom: 1px solid #002b36; }
 QStatusBar { background: #073642; color: #839496; }
+QComboBox QAbstractItemView {font-size: 12px; }
 """
 
 WHITE_RED_THEME = """
@@ -192,6 +198,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #e0e0e0; border: 1px solid #cccccc; padding: 5px 10px; }
 QTabBar::tab:selected { background: #ffffff; border-bottom: 1px solid #ffffff; }
 QStatusBar { background: #cc0000; color: #ffffff; }
+QComboBox QAbstractItemView {font-size: 12px; }
 """
 
 WHITE_BLUE_THEME = """
@@ -220,6 +227,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #f0f0f0; border: 1px solid #cccccc; padding: 5px 10px; }
 QTabBar::tab:selected { background: #ffffff; border-bottom: 1px solid #ffffff; }
 QStatusBar { background: #0066cc; color: #ffffff; }
+QComboBox QAbstractItemView {font-size: 12px; }
 """
 
 MAROON_THEME = """
@@ -247,6 +255,7 @@ QScrollBar::handle:vertical:hover { background: #c83a3a; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
 QTabBar::tab { background: #2b2e35; border: 1px solid #444444; padding: 5px 10px; }
 QTabBar::tab:selected { background: #1a1c20; border-bottom: 1px solid #1a1c20; }
+QComboBox QAbstractItemView {font-size: 12px; }
 QStatusBar { background: #2b2e35; color: #e2ded4; border-top: 1px solid #c83a3a; }
 """
 
