@@ -528,6 +528,9 @@ class UI(QMainWindow):
     }
 
     def __init__(self, torrent_engine):
+        """
+        Инициализация класса
+        """
         super().__init__()
 
         self.torrent_engine = torrent_engine
@@ -548,6 +551,9 @@ class UI(QMainWindow):
         self._apply_theme(THEMES[self.theme])
 
     def _build_tool_bar(self):
+        """
+        Создает toolbar приложения
+        """
         main_tool_bar = QToolBar()
         main_tool_bar.setIconSize(QSize(16, 16))
         main_tool_bar.setMovable(False)
@@ -601,6 +607,10 @@ class UI(QMainWindow):
         self.addToolBar(main_tool_bar)
 
     def _build_central_menu(self):
+        """
+        Функция создает центральное меню приложения с таблицей торрентов
+        и нижней панелью деталей
+        """
         central = QWidget()
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -885,20 +895,24 @@ class UI(QMainWindow):
         ov.addWidget(mid, 1)
         ov.addWidget(right, 1)
 
-        files = QTableWidget(0, 4)
-        files.setHorizontalHeaderLabels(
-            ["Name", "Size", "Progres", "Priority"]
-        )
-        files.verticalHeader().setVisible(False)
-        files.setShowGrid(False)
-        files.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch)
-        for i in range(1, 4):
-            files.horizontalHeader().setSectionResizeMode(
-                i, QHeaderView.ResizeMode.ResizeToContents)
+        self.files = QTreeWidget()
+        self.files.setHeaderLabels(["Name", "Size", "Progress"])
+        self.files.setColumnCount(3)
+        self.files.setAlternatingRowColors(True)
+        self.files.setRootIsDecorated(True)
+        self.files.setUniformRowHeights(True)
+        self.files.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        
+        self.files.setSortingEnabled(True)
+        self.files.sortByColumn(1, Qt.SortOrder.DescendingOrder) # По размеру
+
+        header = self.files.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
         self.tabs.addTab(overview, qta.icon("fa5s.info-circle", color="#9aa1ac"), "More")
-        self.tabs.addTab(files, qta.icon("fa5s.folder-open", color="#9aa1ac"), "Files")
+        self.tabs.addTab(self.files, qta.icon("fa5s.folder-open", color="#9aa1ac"), "Files")
         return self.tabs
 
     def _build_statusbar(self):
@@ -921,6 +935,130 @@ class UI(QMainWindow):
         torrent = self.torrent_engine.get(torrent_id)
         if torrent:
             self._update_details(torrent)
+            self._update_files_tab(torrent_id)
+
+    def _update_files_tab(self, torrent_id: str):
+        files_data = self.torrent_engine.get_files(
+            torrent_id)
+        if not files_data:
+            self.files.clear()
+            return
+
+        self.files.setSortingEnabled(False)
+        self.files.clear()
+
+        folder_icon = qta.icon("fa5s.folder", color="#eab308")
+        file_icon = qta.icon("fa5s.file", color="#9aa1ac")
+        folder_nodes = {}
+
+        for data in files_data:
+            path = data["name"].replace("\\", "/")
+            parts = path.split("/")
+            size = data["size"]
+            progress = data["progress"]
+
+            parent_item = None
+            current_path = ""
+
+            for part in parts[:-1]:
+                current_path = (f"{current_path}/{part}"
+                                if current_path else part)
+
+                if current_path not in folder_nodes:
+                    node = TorrentFileTreeItem([part, "", ""], True)
+                    node.setIcon(0, folder_icon)
+                    
+                    if parent_item is None:
+                        self.files.addTopLevelItem(node)
+                    else:
+                        parent_item.addChild(node)
+                    
+                    folder_nodes[current_path] = node
+                parent_item = folder_nodes[current_path]
+
+            file_name = parts[-1]
+            file_node = TorrentFileTreeItem(
+                [file_name, human_size(size), ""], False)
+            file_node._progress = progress
+            file_node.setIcon(0, file_icon)
+            file_node.setText(1, human_size(size))
+            file_node.setTextAlignment(
+                1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            file_node.setData(0, Qt.ItemDataRole.UserRole, path)
+
+            progress_bar = QProgressBar()
+            progress_bar.setRange(0, 100)
+            progress_bar.setValue(int(progress * 100))
+            progress_bar.setTextVisible(True)
+            progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            if parent_item is None:
+                self.files.addTopLevelItem(file_node)
+            else:
+                parent_item.addChild(file_node)
+
+            self.files.setItemWidget(file_node, 2, progress_bar)
+
+        self._accumulate_tree_sizes(self.files.invisibleRootItem())
+        self.files.setSortingEnabled(True)
+
+    def _accumulate_tree_sizes(self, item) -> int:
+        total = 0
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if getattr(child, "_is_folder", False):
+                size = self._accumulate_tree_sizes(child)
+                child.setText(1, human_size(size))
+                child._sort_size = size
+                child.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                total += size
+            else:
+                total += getattr(child, "_sort_size", 0)
+        return total
+
+    def _update_files_progress(self, torrent_id: str):
+        if (self.tabs.currentIndex() != 1 or
+            self.files.topLevelItemCount() == 0):
+            return
+
+        files_data = self.torrent_engine.get_files(torrent_id)
+        if not files_data:
+            return
+
+        progress_map = {
+            data["name"].replace("\\", "/"): data["progress"] 
+            for data in files_data
+        }
+
+        self.files.setSortingEnabled(False)
+
+        def update_node(item):
+            for i in range(item.childCount()):
+                child = item.child(i)
+                
+                if getattr(child, "_is_folder", False):
+                    update_node(child)
+                else:
+                    path = child.data(0, Qt.ItemDataRole.UserRole)
+                    if path in progress_map:
+                        new_progress = progress_map[path]
+
+                        progress_bar = self.files.itemWidget(child, 2)
+                        if progress_bar:
+                            progress_bar.setValue(int(new_progress * 100))
+                        else:
+                            new_progress_bar = QProgressBar()
+                            new_progress_bar.setRange(0, 100)
+                            new_progress_bar.setValue(int(new_progress * 100))
+                            new_progress_bar.setTextVisible(True)
+                            new_progress_bar.setAlignment(
+                                Qt.AlignmentFlag.AlignCenter)
+                            self.files.setItemWidget(child, 2, new_progress_bar)
+
+                        child._progress = new_progress
+
+        update_node(self.files.invisibleRootItem())
+        self.files.setSortingEnabled(True)
 
     def _get_default_savepath(self):
         return self.torrent_engine.default_savepath
@@ -1001,8 +1139,10 @@ class UI(QMainWindow):
                 self._update_details(None)
 
         self._apply_filter()
-
         self.table.setSortingEnabled(True)
+
+        if self._current_selected_id:
+            self._update_files_progress(self._current_selected_id)
 
     def _index_row_by_id(self):
         result = {}

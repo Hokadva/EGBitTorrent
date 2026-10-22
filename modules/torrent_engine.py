@@ -332,6 +332,35 @@ class TorrentEngine:
     def set_upload_limit(self, bytes_per_sec: int):
         self._session.apply_settings({"upload_rate_limit": int(bytes_per_sec)})
 
+    def get_files(self, torrent_id: str) -> list:
+        with self._lock:
+            handle = self._handles.get(torrent_id)
+            if not handle or not handle.is_valid():
+                return []
+
+            if not handle.status().has_metadata:
+                return []
+
+            torrent_file = handle.torrent_file()
+            if torrent_file is None:
+                return []
+
+            storage = torrent_file.files()
+            progress_array = handle.file_progress()
+            
+            result = []
+            for idx in range(storage.num_files()):
+                file_size = storage.file_size(idx)
+                downloaded = progress_array[idx]
+                progress = downloaded / file_size if file_size > 0 else 0.0
+
+                result.append({
+                    "name": storage.file_path(idx),
+                    "size": file_size,
+                    "progress": progress,
+                })
+            return result
+
     def shutdown(self):
         with self._lock:
             try:
