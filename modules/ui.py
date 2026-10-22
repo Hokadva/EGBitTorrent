@@ -15,11 +15,11 @@ import os
 import datetime
 import qtawesome as qta
 from modules.torrent import TorrentState, DuplicateTorrentError
+from modules.torrent_engine import TorrentEngine
 from modules.themes import THEMES
 from modules.validator import (
     validate_save_path, validate_magnet, validate_torrent_file
 )
-import libtorrent as lt
 from modules.core import (
     human_size, get_free_disk_space, find_common_root,
     new_root_if_necessary, smart_folder_creating, extract_magnet_name,
@@ -100,7 +100,7 @@ class AddMagnetWindow(QDialog):
 class AddTorrentWindow(QDialog):
     def __init__(
             self, default_save_path: str, parent, torrent: str,
-            is_magnet: bool = False):
+            torrent_info = None, is_magnet: bool = False):
         super().__init__(parent)
 
         self.torrent = torrent
@@ -113,7 +113,7 @@ class AddTorrentWindow(QDialog):
         self._is_magnet = is_magnet
 
         if not self._is_magnet:
-            self._load_torrent_info()
+            self._torrent_info = torrent_info
             self.build_ui()
             self._apply_torrent_info(self._torrent_info)
             self._update_free_space()
@@ -197,8 +197,7 @@ class AddTorrentWindow(QDialog):
 
         if not self._is_magnet:
             try:
-                info = lt.torrent_info(self.torrent)
-                storage = info.files()
+                storage = self._torrent_info.files()
                 n = storage.num_files()
 
                 paths = []
@@ -340,23 +339,6 @@ class AddTorrentWindow(QDialog):
             return
 
         accept_btn.setEnabled(False)
-
-    def _load_torrent_info(self):
-        """Загружает метаданные из .torrent-файла и обновляет UI."""
-        try:
-            info = lt.torrent_info(self.torrent)
-
-        except Exception as e:
-            self._torrent_info = None
-            self.files_table.setRowCount(0)
-            self.files_status.setText(f"Read error: {e}")
-            self.info_name.setText("-")
-            self.info_size.setText("-")
-            self.info_date.setText("-")
-            self.info_comment.setText("-")
-            return
-
-        self._torrent_info = info
 
     def _apply_torrent_info(self, info):
         """Заполняет UI данными из lt.torrent_info."""
@@ -611,10 +593,7 @@ class UI(QMainWindow):
         main_tool_bar.addWidget(spacer)
 
         self.act_theme = tool_bar_add_action(
-            "fa5s.cog", "Settings", "#9aa1ac", self._toggle_theme
-        )
-        self.advance = tool_bar_add_action(
-            "fa5s.tools", "Advance settings", "#9aa1ac"
+            "fa5s.cog", "Settings", "#9aa1ac"
         )
         self.statistic = tool_bar_add_action(
             "fa5s.chart-line", "Statistic", "#3b82f6"
@@ -930,8 +909,11 @@ class UI(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
-        self.tabs.addTab(overview, qta.icon("fa5s.info-circle", color="#9aa1ac"), "More")
-        self.tabs.addTab(self.files, qta.icon("fa5s.folder-open", color="#9aa1ac"), "Files")
+        self.tabs.addTab(
+            overview, qta.icon("fa5s.info-circle", color="#9aa1ac"), "More")
+        self.tabs.addTab(
+            self.files, qta.icon("fa5s.folder-open", color="#9aa1ac"), "Files")
+        self.tabs.currentChanged.connect(self._status_bar_subitem)
         return self.tabs
 
     def _build_statusbar(self):
@@ -940,10 +922,16 @@ class UI(QMainWindow):
         sb.showMessage("Total: 0 │ Active: 0 │ ↓ 0 MB/s | ↑ 0 MB/s │ DHT: 0")
 
     def _on_item_changed(self):
-        current_item = self.table.currentItem()
-        if current_item is None:
+        selected = self.table.selectedItems()
+        if not selected:
+            self._current_selected_id = None
+
+            self._update_details(None)
+            self.files.clear()
+
             return
 
+        current_item = selected[0]
         torrent_id = self.table.item(current_item.row(), 0).data(
             Qt.ItemDataRole.UserRole
         )
@@ -1035,9 +1023,17 @@ class UI(QMainWindow):
                 total += getattr(child, "_sort_size", 0)
         return total
 
+    def _status_bar_subitem(self) -> int:
+        """
+        Returns the selected sub-item from the items menu
+        """
+        return self.tabs.currentIndex()
+
     def _update_files_progress(self, torrent_id: str):
-        if (self.tabs.currentIndex() != 1 or
-            self.files.topLevelItemCount() == 0):
+        if not torrent_id:
+            self.files.clear()
+
+        if self.files.topLevelItemCount() == 0:
             return
 
         files_data = self.torrent_engine.get_files(torrent_id)
@@ -1147,21 +1143,23 @@ class UI(QMainWindow):
 
         self._update_statusbar(torrents)
         if self._current_selected_id:
-            torrent = self.torrent_engine.get(self._current_selected_id)
-            if torrent:
-                self._update_details(torrent)
+            if self._status_bar_subitem() == 1:
+                self._update_files_progress(self._current_selected_id)
+
             else:
-                self._current_selected_id = None
-                self._update_details(None)
+                torrent = self.torrent_engine.get(self._current_selected_id)
+                if torrent:
+                    self._update_details(torrent)
+                else:
+                    self._current_selected_id = None
+                    self._update_details(None)
         else:
-            if self.table.rowCount() == 0:
-                self._update_details(None)
-
-        self._apply_filter()
-        self.table.setSortingEnabled(True)
-
-        if self._current_selected_id:
-            self._update_files_progress(self._current_selected_id)
+            if self._status_bar_subitem == 1:
+                self._update_files_progress(None)
+            else:
+                if self.table.rowCount() == 0:
+                    self._update_details(None)
+            
 
     def _index_row_by_id(self):
         result = {}
@@ -1175,24 +1173,32 @@ class UI(QMainWindow):
         return result
 
     def _peers_seeds_constructor(self, attr: str, torrent: TorrentFile) -> str:
+        """
+        Return from seeds all seeds -> seeds (all seeds),
+        contain case when all seeds = -1 (nobody share that file),
+        similary for peers
+        """
         total = getattr(torrent, attr + "_total")
         return f"{getattr(torrent, attr)} ({total if total > 0 else 0})"
 
     def _row_seeds_element(self, torrent: TorrentFile) -> str:
+        """
+        Return from seeds all seeds -> seeds (all seeds),
+        contain case when all seeds = -1 (nobody share that file),
+        """
         return self._peers_seeds_constructor("seeds", torrent)
 
     def _row_peers_element(self, torrent: TorrentFile) -> str:
+        """
+        Return from peers all peers -> peers (all peers),
+        contain case when all peers = -1 (nobody share that file),
+        """
         return self._peers_seeds_constructor("peers", torrent)
 
-    def _set_text(self, row: int, column: int, text: str):
-        item = self.table.item(row, column)
-        if item is None:
-            self.table.setItem(row, column, QTableWidgetItem(text))
-
-        elif item.text() != text:
-            item.setText(text)
-
     def _update_statusbar(self, torrents):
+        """
+        Updating status bar
+        """
         total = len(torrents)
         active = sum(1 for torrent in torrents if torrent.is_active)
         dlr = human_rate(sum(torrent.downloading_rate for torrent in torrents))
@@ -1206,6 +1212,9 @@ class UI(QMainWindow):
         )
 
     def add_torrent_by_magnet(self):
+        """
+        Creating torrent from magnet link
+        """
         magnet_window = AddMagnetWindow(self)
         result = magnet_window.exec()
 
@@ -1222,6 +1231,9 @@ class UI(QMainWindow):
         self._create_torrent(magnet_link, True)
 
     def add_torent_by_file(self):
+        """
+        Creating torrent from file
+        """
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select .torrent file", "",
@@ -1240,8 +1252,15 @@ class UI(QMainWindow):
         self._create_torrent(path)
 
     def _create_torrent(self, path: str, is_magnet: bool = False):
+        """
+        A common function for creating a torrent for magnet links and torrent
+        the file
+        """
         add_torrent_window = AddTorrentWindow(
-            self._get_default_savepath(), self, path, is_magnet
+            self._get_default_savepath(),
+            self, path,
+            None if is_magnet else self.torrent_engine.get_torrent_info(path),
+            is_magnet
         )
 
         result = add_torrent_window.exec()
@@ -1293,9 +1312,15 @@ class UI(QMainWindow):
     def _handle_duplicate(
             self, path: str, save_path: str, start_now: bool,
             torrent_id: str, is_magnet: bool):
+        """
+        Handles the case of duplicate torrent creation, offers
+        There are three solutions to the problem for the user:
+        upload to a new folder, show downloadable torrent,
+        cancel adding torrent
+        """
         box = QMessageBox(self)
         box.setWindowTitle("Duplicate")
-        box.setText("This torrent has already been added. What can I do?")
+        box.setText("This torrent has already been added. What do next?")
         box.setIcon(QMessageBox.Icon.Question)
 
         btn_open = box.addButton(
@@ -1334,6 +1359,9 @@ class UI(QMainWindow):
                 self._error("Adding error", str(e))
 
     def _select_torrent_by_id(self, torrent_id: str):
+        """
+        Select torrent in list by his id
+        """
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item is None:
@@ -1347,18 +1375,24 @@ class UI(QMainWindow):
         self._info("Torrent isn't in list.")
 
     def _error(self, title: str, text: str = ""):
+        """
+        Reusable error message
+        """
         if text:
             QMessageBox.critical(self, title, text)
         else:
             QMessageBox.critical(self, "Error", title)
 
     def _info(self, text: str):
+        """
+        Reusable info message
+        """
         QMessageBox.information(self, "Information", text)
 
-    def _warn(self, text: str):
-        QMessageBox.warning(self, "Warning", text)
-
     def _confirm(self, text: str, title: str = "Confirm") -> bool:
+        """
+        Reusable confirm message
+        """
         answer = QMessageBox.question(
             self, title, text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1367,6 +1401,10 @@ class UI(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _manipulate_torrent(self, method: str, func: callable = None):
+        """
+        Constructor for these funcs: run_current_torrent,
+        pause_current_torrent, remove_torrent
+        """
         current_torrents = self.table.selectedItems()
         if not current_torrents:
             return
@@ -1391,16 +1429,29 @@ class UI(QMainWindow):
             getattr(self.torrent_engine, method)(torrent_id)
 
     def run_current_torrent(self):
+        """
+        run selected torrent(s) from list (table)
+        """
         self._manipulate_torrent("resume")
 
     def pause_current_torrent(self):
+        """
+        pause selected torrent(s) from list (table)
+        """
         self._manipulate_torrent("pause")
 
     def remove_torrent(self):
+        """
+        remove selected torrent(s) from list (table)
+        """
         self._manipulate_torrent(
             "remove", self._remove_torrent_window_create)
 
     def _remove_torrent_window_create(self) -> tuple[bool, bool]:
+        """
+        Create window, that ask user: 'Do you want to remove files in
+        torrent(s) with that torrent(s)'
+        """
         remove_window = RemoveTorrent(self)
         result = remove_window.exec()
 
@@ -1410,8 +1461,7 @@ class UI(QMainWindow):
         return (True, remove_window.is_remove_files)
 
     def _apply_theme(self, theme: str):
+        """
+        Apply theme in programm
+        """
         self.setStyleSheet(theme)
-
-    def _toggle_theme(self):
-        ...
-

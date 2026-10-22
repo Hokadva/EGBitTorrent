@@ -1,4 +1,5 @@
 import libtorrent as lt
+from libtorrent import torrent_info
 import sys
 import os
 import threading
@@ -331,6 +332,9 @@ class TorrentEngine:
 
     def set_upload_limit(self, bytes_per_sec: int):
         self._session.apply_settings({"upload_rate_limit": int(bytes_per_sec)})
+
+    def get_torrent_info(self, torrent: TorrentFile) -> torrent_info:
+        return lt.torrent_info(torrent)
 
     def get_files(self, torrent_id: str) -> list:
         with self._lock:
