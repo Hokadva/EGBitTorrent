@@ -110,7 +110,9 @@ class AddTorrentWindow(QDialog):
 
         self._default_save_path = default_save_path
 
-        if not is_magnet:
+        self._is_magnet = is_magnet
+
+        if not self._is_magnet:
             self._load_torrent_info()
             self.build_ui()
             self._apply_torrent_info(self._torrent_info)
@@ -192,7 +194,24 @@ class AddTorrentWindow(QDialog):
         panel.addWidget(self.start_now_cb)
 
         self.create_folder_cb = QCheckBox("Create folder for torrent")
-        self.create_folder_cb.setChecked(True)
+
+        if not self._is_magnet:
+            try:
+                info = lt.torrent_info(self.torrent)
+                storage = info.files()
+                n = storage.num_files()
+
+                paths = []
+                for i in range(n):
+                    paths.append(
+                        storage.file_path(i).replace("\\", "/"))
+
+                common_root = find_common_root(paths)
+                self.create_folder_cb.setChecked(
+                    True if not(common_root or len(paths) == 1) else False)
+            except Exception:
+                pass
+
         panel.addWidget(self.create_folder_cb)
 
         panel.addStretch(1)
