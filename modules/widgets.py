@@ -31,7 +31,8 @@ class TorrentFileTreeItem(QTreeWidgetItem):
             return self.text(0).lower() < other.text(0).lower()
 
         elif column == 1:
-            return self.text < getattr(other, "_sort_size", 0)
+            return approximate_byte_size(
+                self.text(1)) < approximate_byte_size(other.text(1))
 
         elif column == 2:
             return getattr(self, "_progress", 0) < getattr(other, "_progress", 0)

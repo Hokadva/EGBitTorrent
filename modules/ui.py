@@ -978,7 +978,7 @@ class UI(QMainWindow):
 
             file_name = parts[-1]
             file_node = TorrentFileTreeItem(
-                [file_name, human_size(size), ""], False, sort_size=size)
+                [file_name, human_size(size), ""], False)
             file_node._progress = progress
             file_node.setIcon(0, file_icon)
             file_node.setText(1, human_size(size))
