@@ -6,9 +6,10 @@ from modules.core import (
 
 
 class TorrentFileTreeItem(QTreeWidgetItem):
-    def __init__(self, texts, is_folder: bool = False):
+    def __init__(self, texts, is_folder: bool = False, sort_size: int = 0):
         super().__init__(texts)
         self._is_folder = is_folder
+        self._sort_size = sort_size
 
     def __lt__(self, other):
         tree = self.treeWidget()
@@ -30,9 +31,13 @@ class TorrentFileTreeItem(QTreeWidgetItem):
         if column == 0:
             return self.text(0).lower() < other.text(0).lower()
 
-        else:
-            return approximate_byte_size(
-                self.text(1)) < approximate_byte_size(other.text(1))
+        elif column == 1:
+            return self._sort_size < getattr(other, "_sort_size", 0)
+
+        elif column == 2:
+            return getattr(self, "_progress", 0) < getattr(other, "_progress", 0)
+
+        return super().__lt__(other)
 
 
 class TorrentFileItem(QTableWidgetItem):
