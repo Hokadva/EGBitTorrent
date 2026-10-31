@@ -23,37 +23,6 @@ class TorrentModel:
                 error_message TEXT
             )
         """)
-        self._connection.execute("""
-            CREATE TABLE IF NOT EXISTS active_torrents (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                save_path TEXT NOT NULL,
-                added_at TEXT NOT NULL,
-                start_now BOOLEAN NOT NULL,
-                resume_data BLOB
-            )
-        """)
-
-    def save_active_torrent(self, torrent_id: str, name: str, save_path: str,
-                            added_at: str, start_now: bool, resume_data):
-        with self._connection:
-            self._connection.execute("""
-                INSERT OR REPLACE INTO active_torrents
-                (id, name, save_path, added_at, start_now, resume_data)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (torrent_id, name, save_path, added_at, start_now, resume_data))
-
-    def get_active_torrents(self):
-        cursor = self._connection.execute(
-            "SELECT id, name, save_path, added_at, start_now, resume_data FROM active_torrents"
-        )
-        return cursor.fetchall()
-
-    def remove_active_torrent(self, torrent_id: str):
-        with self._connection:
-            self._connection.execute(
-                "DELETE FROM active_torrents WHERE id = ?", (torrent_id,)
-            )
 
     def add_history_record(
             self, torrent_id: str, name: str, size_bytes: int, save_path: str,
