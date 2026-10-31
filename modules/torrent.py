@@ -53,6 +53,8 @@ class TorrentFile:
     finished_at: Optional[float] = None
     error_message: Optional[str] = None
     groups: set = field(default_factory=set)
+    _history_saved: bool = False
+    _error_history_saved: bool = False
 
     @property
     def size_human(self) -> str:
