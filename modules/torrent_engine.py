@@ -3,8 +3,9 @@ from libtorrent import torrent_info
 import sys
 import os
 import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 import time
+import datetime
 
 from modules.torrent import (
     TorrentFile, DuplicateTorrentError, TorrentFileInfo, TorrentState)
@@ -23,10 +24,13 @@ class TorrentEngine:
         lt.torrent_status.checking_resume_data: TorrentState.CHECKING,
     }
 
-    def __init__(self, default_save_path: str, max_active: int = 3):
+    def __init__(
+            self, default_save_path: str, on_history: Callable,
+            max_active: int = 3,):
         """Инициализация класса"""
         self._default_savepath = default_save_path
         self.max_active = max_active
+        self._on_history = on_history or (lambda torrent, status: None)
 
         self._lock = threading.RLock()
         self._session: Optional[lt.session] = None
@@ -149,6 +153,11 @@ class TorrentEngine:
             if torrent:
                 torrent.state = TorrentState.SEEDING
                 torrent.finished_at = time.time()
+
+                if not getattr(torrent, "_history_saved", False):
+                    torrent._history_saved = True
+                    self._on_history(torrent, "completed")
+                    
             self._start_next()
 
     def pause(self, torrent_id: str):
@@ -180,8 +189,12 @@ class TorrentEngine:
     def remove(self, torrent_id: str, delete_files: bool = False):
         """Удаляет торрент. Работает даже при невалидном handle."""
         with self._lock:
-            handle = self._handles.get(torrent_id)
+            torrent = self._torrents.get(torrent_id)
 
+            if torrent:
+                self._on_history(torrent, "removed")
+
+            handle = self._handles.get(torrent_id)
             if handle is not None:
                 try:
                     if handle.is_valid():
@@ -228,6 +241,11 @@ class TorrentEngine:
                 if not handle.is_valid():
                     torrent.state = TorrentState.ERROR
                     torrent.error_message = "Handle invalid"
+
+                    if not getattr(torrent, "_error_history_saved", False):
+                        torrent._error_history_saved = True
+                        self._on_history(torrent, "error")
+
                     continue
 
                 try:
@@ -236,11 +254,21 @@ class TorrentEngine:
                 except Exception as e:
                     torrent.state = TorrentState.ERROR
                     torrent.error_message = f"Error {e}"
+
+                    if not getattr(torrent, "_error_history_saved", False):
+                        torrent._error_history_saved = True
+                        self._on_history(torrent, "error")
+
                     continue
 
                 if status.errc and status.errc.value() != 0:
                     torrent.state = TorrentState.ERROR
                     torrent.error_message = status.errc.message()
+
+                    if not getattr(torrent, "_error_history_saved", False):
+                        torrent._error_history_saved = True
+                        self._on_history(torrent, "error")
+
                     try:
                         handle.pause()
                     except:
@@ -277,6 +305,75 @@ class TorrentEngine:
                     torrent.downloading_rate = 0
                     if torrent.finished_at is None:
                         self._on_torrent_finished(torrent_id)
+
+    def save_active_state(self, db):
+        """Сохраняет активные торренты в БД перед закрытием."""
+        with self._lock:
+            for torrent_id, handle in self._handles.items():
+                torrent = self._torrents.get(torrent_id)
+                if not torrent or not handle.is_valid():
+                    continue
+
+                try:
+                    resume_data = lt.bencode(handle.write_resume_data())
+                except Exception as e:
+                    print(f"Cannot get resume data for {torrent.name}: {e}")
+                    resume_data = None
+
+                db.save_active_torrent(
+                    torrent_id=torrent.id,
+                    name=torrent.name,
+                    save_path=torrent.save_path,
+                    added_at=torrent.added_at,
+                    start_now=(torrent.state != TorrentState.PAUSED),
+                    resume_data=resume_data
+                )
+
+    def load_active_state(self, db):
+        """Восстанавливает торренты из БД при старте."""
+        records = db.get_active_torrents()
+        for (torrent_id, name, save_path, added_at,
+             start_now, resume_data) in records:
+            try:
+                params = lt.add_torrent_params()
+                params.save_path = save_path
+
+                if resume_data:
+                    try:
+                        params = lt.read_resume_data(resume_data)
+                        params.save_path = save_path
+
+                    except Exception as decode_err:
+                        print(f"Error: {decode_err}")
+                        continue
+                else:
+                    pass
+
+                added_at = float(added_at)
+
+                with self._lock:
+                    handle = self._session.add_torrent(params)
+
+                    model = TorrentFile(
+                        id=torrent_id,
+                        name=name,
+                        save_path=save_path,
+                        added_at=added_at,
+                        state=(TorrentState.QUEUED
+                            if start_now else TorrentState.PAUSED),
+                    )
+                    self._handles[torrent_id] = handle
+                    self._torrents[torrent_id] = model
+
+                    if start_now:
+                        self._queued.append(torrent_id)
+                    else:
+                        handle.pause()
+
+            except Exception as e:
+                print(f"Failed to restore {name}: {e}")
+
+        self._start_next()
 
     def get_all_torrents(self) -> List[TorrentFile]:
         with self._lock:

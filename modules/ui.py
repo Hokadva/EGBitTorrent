@@ -97,6 +97,88 @@ class AddMagnetWindow(QDialog):
         return self._link_field.toPlainText().strip()
 
 
+class HistoryWindow(QDialog):
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("Torrent History")
+        self.resize(900, 500)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Name", "Size", "Save Path", "Added At", "Status"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+        for i in [1, 3, 4]:
+            self.table.horizontalHeader().setSectionResizeMode(
+                i, QHeaderView.ResizeMode.ResizeToContents)
+        
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+
+        layout.addWidget(self.table)
+
+        btn_layout = QHBoxLayout()
+        btn_clear = QPushButton("Clear All History")
+        btn_clear.setIcon(qta.icon("fa5s.trash-alt", color="#ef4444"))
+        btn_clear.clicked.connect(self._clear_history)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+
+        btn_layout.addWidget(btn_clear)
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+
+        self._load_history()
+
+    def _load_history(self):
+        records = self.db.get_history()
+        self.table.setRowCount(0)
+        for record in records:
+            (torrent_id, name, size, path, added,
+             status, finished, removed, error) = record
+
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            date_str = added[:16].replace("T", " ") if added else "-"
+            
+            self.table.setItem(row, 0, QTableWidgetItem(name))
+            self.table.setItem(row, 1, QTableWidgetItem(human_size(size)))
+            self.table.setItem(row, 2, QTableWidgetItem(path))
+            self.table.setItem(row, 3, QTableWidgetItem(date_str))
+            
+            status_item = QTableWidgetItem(status.upper())
+            if status == "completed":
+                status_item.setForeground(QColor("#22c55e"))
+            elif status == "removed":
+                status_item.setForeground(QColor("#ef4444"))
+            elif status == "error":
+                status_item.setForeground(QColor("#eab308"))
+            self.table.setItem(row, 4, status_item)
+
+    def _clear_history(self):
+        if QMessageBox.question(
+            self, "Clear History", "Delete all history records?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) == QMessageBox.StandardButton.Yes:
+            self.db.clear_history()
+            self._load_history()
+
+
 class AddTorrentWindow(QDialog):
     def __init__(
             self, default_save_path: str, parent, torrent: str,
@@ -528,13 +610,14 @@ class UI(QMainWindow):
         "added": "-",
     }
 
-    def __init__(self, torrent_engine):
+    def __init__(self, torrent_engine, db):
         """
         Инициализация класса
         """
         super().__init__()
 
         self.torrent_engine = torrent_engine
+        self.db = db
         self.theme = "maroon"
         self._current_selected_id = None
 
@@ -596,7 +679,7 @@ class UI(QMainWindow):
             "fa5s.cog", "Settings", "#9aa1ac"
         )
         self.statistic = tool_bar_add_action(
-            "fa5s.chart-line", "Statistic", "#3b82f6"
+            "fa5s.chart-line", "History", "#3b82f6", self._show_history
         )
         self.info = tool_bar_add_action(
             "fa5s.info", "About", "#3b82f6"
@@ -1160,7 +1243,6 @@ class UI(QMainWindow):
                 if self.table.rowCount() == 0:
                     self._update_details(None)
             
-
     def _index_row_by_id(self):
         result = {}
         for row in range(self.table.rowCount()):
@@ -1210,6 +1292,10 @@ class UI(QMainWindow):
             f"↓ Downloading speed: {dlr} | "
             f"Uploading: {ulr}/s"
         )
+
+    def _show_history(self):
+        history_window = HistoryWindow(self.db, self)
+        history_window.exec()
 
     def add_torrent_by_magnet(self):
         """
