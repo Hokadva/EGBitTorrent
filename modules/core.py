@@ -2,23 +2,17 @@ import os
 import shutil
 from typing import Optional
 import re
-from enum import Enum
 from urllib.parse import parse_qs, unquote
 
 POSTFS = ("B", "KB", "MB", "GB", "TB")
 NUMS = "0123456789."
 
 
-class Colors(str, Enum):
-    red = "#FF0000"
-    error_red = "#EF4444"
-    orange = "#FFA500"
-    green = "#00FF00"
-    succes_green = "#22C55E"
-
-
-def colorize(text: str, color: Colors) -> str:
+def colorize(text: str, color: str) -> str:
     return f"<span style='color:{color}'>{text}</span>"
+
+def get_default_save_path() -> str:
+    return os.path.expanduser("~/Downloads")
 
 def folder_remove(path: str) -> str:
     try:

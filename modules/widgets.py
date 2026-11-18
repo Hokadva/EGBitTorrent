@@ -1,4 +1,5 @@
 from PyQt6.QtWidgets import QTreeWidgetItem, QTableWidgetItem
+from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt
 from modules.core import (
     approximate_byte_size

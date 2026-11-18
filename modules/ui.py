@@ -1,77 +1,106 @@
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QToolBar, QLineEdit, QComboBox, QLabel, QPushButton,
+    QToolBar, QLineEdit, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QProgressBar,
-    QListWidget, QListWidgetItem, QTabWidget, QStatusBar,
+    QListWidget, QTextBrowser, QTabWidget, QStatusBar,
     QHeaderView, QAbstractItemView, QFileDialog, QMessageBox, QDialog,
     QDialogButtonBox, QGroupBox, QCheckBox, QGridLayout, QTreeWidget,
-    QTextEdit, QSizePolicy
+    QTextEdit, QSizePolicy, QComboBox
 )
 from modules.torrent import TorrentFile
+from modules.models import TorrentModel
+from modules.settings_manager import SettingManager
 from PyQt6.QtGui import QAction, QColor
 from modules.widgets import TorrentFileTreeItem, TorrentFileItem
 import os
+from modules.torrent_engine import TorrentEngine
+from typing import Optional
 import datetime
 import qtawesome as qta
 from modules.torrent import TorrentState, DuplicateTorrentError
-from modules.torrent_engine import TorrentEngine
 from modules.themes import THEMES
+import modules.consts as consts
 from modules.validator import (
     validate_save_path, validate_magnet, validate_torrent_file
 )
 from modules.core import (
     human_size, get_free_disk_space, find_common_root,
     new_root_if_necessary, smart_folder_creating, extract_magnet_name,
-    human_rate, colorize, Colors, folder_remove
+    human_rate, folder_remove, colorize
 )
 
 
-class RemoveTorrent(QDialog):
-    def __init__(self, parent):
+class OkCancelMixin(QDialog):
+    def __init__(self, title: str, size_w: int, size_h: int, parent=None):
         super().__init__(parent)
+
+        self.setMinimumSize(size_w, size_h)
+        self.setWindowTitle(title)
+
+    def _create_buttons(self) -> QDialogButtonBox:
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok
+                       ).setText("Accept")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel
+                        ).setText("Cancel")
+
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        return buttons
+
+
+class CloseBtnMixin(QDialog):
+    def __init__(self, title: str, size_w: int, size_h: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(size_w, size_h)
+        self._build_ui()
+    
+    def _create_close_btn(self) -> QPushButton:
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        return btn_close
+
+    def _build_ui(self):
+        ...
+
+
+class RemoveTorrent(OkCancelMixin):
+    def __init__(self, parent):
+        super().__init__("Remove torrent", 200, 100, parent)
 
         self._build_ui()
 
     def _build_ui(self):
-        self.setMinimumSize(200, 100)
-        self.setWindowTitle("Remove torrent")
         remove_torrent_layout = QVBoxLayout()
         self.setLayout(remove_torrent_layout)
 
         confirm_label = QLabel(
             "Do you really want to delete these torrents")
         self._delete_file_checkbox = QCheckBox("Also delete the uploaded files?")
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.button(QDialogButtonBox.StandardButton.Ok
-                            ).setText("Accept")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel
-                            ).setText("Cancel")
-
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
 
         remove_torrent_layout.addWidget(confirm_label)
         remove_torrent_layout.addWidget(self._delete_file_checkbox)
-        remove_torrent_layout.addWidget(buttons)
+        remove_torrent_layout.addWidget(self._create_buttons())
 
     @property
     def is_remove_files(self) -> bool:
         return self._delete_file_checkbox.isChecked()
 
 
-class AddMagnetWindow(QDialog):
+class AddMagnetWindow(OkCancelMixin):
     def __init__(self, parent):
-        super().__init__(parent)
+        super().__init__(
+            "Add torrent by magnet link", 300, 200, parent)
 
         self._build_ui()
 
     def _build_ui(self):
-        self.setMinimumWidth(300)
-        self.setWindowTitle("Add torrent by magnet link")
         magnet_main_layout = QVBoxLayout()
         self.setLayout(magnet_main_layout)
 
@@ -79,31 +108,48 @@ class AddMagnetWindow(QDialog):
         self._link_field.clear()
         self._link_field.setPlaceholderText("magnet:?xt=urn:btih:...")
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.button(QDialogButtonBox.StandardButton.Ok
-                            ).setText("Accept")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel
-                            ).setText("Cancel")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
         magnet_main_layout.addWidget(self._link_field)
-        magnet_main_layout.addWidget(buttons)
+        magnet_main_layout.addWidget(self._create_buttons())
 
     @property
     def magnet_link(self):
+        print(self._link_field.toPlainText().strip())
         return self._link_field.toPlainText().strip()
 
 
-class HistoryWindow(QDialog):
+class StaticWindow(CloseBtnMixin):
     def __init__(self, db, parent=None):
-        super().__init__(parent)
         self.db = db
-        self.setWindowTitle("Torrent History")
-        self.resize(900, 500)
-        self._build_ui()
+        super().__init__("Statistic", 300, 200, parent)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        total_download, total_upload = self.db.total_traffic()
+
+        labels = [
+            ("User statistic: ", ""),
+            ("Total upload: ", human_size(total_upload)),
+            ("Total download: ", human_size(total_download)),
+            ("Upload/Download ration: ", round(total_upload / total_download, 2)),
+            ("Total remove: ", self.db.total_remove),
+            ("Total records: ", self.db.total_records)
+        ]
+
+        for base_text, text in labels:
+            if isinstance(text, (int, float)):
+                text = str(text)
+
+            label = QLabel(base_text + text)
+            layout.addWidget(label)
+
+        layout.addWidget(self._create_close_btn())
+
+
+class HistoryWindow(CloseBtnMixin):
+    def __init__(self, db, parent=None):
+        self.db = db
+        super().__init__("Torrent history", 900, 500, parent)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -131,15 +177,12 @@ class HistoryWindow(QDialog):
 
         btn_layout = QHBoxLayout()
         btn_clear = QPushButton("Clear All History")
-        btn_clear.setIcon(qta.icon("fa5s.trash-alt", color="#ef4444"))
+        btn_clear.setIcon(qta.icon("fa5s.trash-alt", color=consts.AppColors.RED.value))
         btn_clear.clicked.connect(self._clear_history)
-
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(self.accept)
 
         btn_layout.addWidget(btn_clear)
         btn_layout.addStretch()
-        btn_layout.addWidget(btn_close)
+        btn_layout.addWidget(self._create_close_btn())
         layout.addLayout(btn_layout)
 
         self._load_history()
@@ -163,11 +206,11 @@ class HistoryWindow(QDialog):
             
             status_item = QTableWidgetItem(status.upper())
             if status == "completed":
-                status_item.setForeground(QColor("#22c55e"))
+                status_item.setForeground(QColor(consts.AppColors.GREEN.value))
             elif status == "removed":
-                status_item.setForeground(QColor("#ef4444"))
+                status_item.setForeground(QColor(consts.AppColors.RED.value))
             elif status == "error":
-                status_item.setForeground(QColor("#eab308"))
+                status_item.setForeground(QColor(consts.AppColors.YELLOW.value))
             self.table.setItem(row, 4, status_item)
 
     def _clear_history(self):
@@ -179,16 +222,13 @@ class HistoryWindow(QDialog):
             self._load_history()
 
 
-class AddTorrentWindow(QDialog):
+class AddTorrentWindow(OkCancelMixin):
     def __init__(
             self, default_save_path: str, parent, torrent: str,
             torrent_info = None, is_magnet: bool = False):
-        super().__init__(parent)
+        super().__init__("Add torrent", 820, 560, parent)
 
         self.torrent = torrent
-
-        self.setWindowTitle("Add torrent")
-        self.resize(820, 560)
 
         self._default_save_path = default_save_path
 
@@ -220,14 +260,8 @@ class AddTorrentWindow(QDialog):
 
         root.addWidget(self._build_bottom_panel())
 
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Add")
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
-        self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
+        self.buttons = self._create_buttons()
+
         root.addWidget(self.buttons)
 
         self._button_box = self.buttons
@@ -248,7 +282,7 @@ class AddTorrentWindow(QDialog):
         row.addWidget(self.path_edit, 1)
 
         browse_dir_btn = QPushButton(
-            qta.icon("fa5s.folder-open", color="#9aa1ac"), ""
+            qta.icon("fa5s.folder-open", color=consts.AppColors.GRAY.value), ""
         )
         browse_dir_btn.setFixedWidth(34)
         browse_dir_btn.clicked.connect(self._on_browse_dir)
@@ -258,7 +292,7 @@ class AddTorrentWindow(QDialog):
 
         self.free_space_label = QLabel("Free disc-space: -")
         self.free_space_label.setStyleSheet(
-            "color: #9aa1ac; font-size: 11px;")
+            f"color: {consts.AppColors.GRAY.value}; font-size: 11px;")
         svg.addWidget(self.free_space_label)
 
         panel.addWidget(save_group)
@@ -326,7 +360,7 @@ class AddTorrentWindow(QDialog):
         fg.addWidget(self.files_tree)
 
         self.files_status = QLabel("-")
-        self.files_status.setStyleSheet("color: #9aa1ac; font-size: 11px;")
+        self.files_status.setStyleSheet(f"color: {consts.AppColors.GRAY.value}; font-size: 11px;")
         fg.addWidget(self.files_status)
 
         panel.addWidget(files_group, 1)
@@ -342,7 +376,7 @@ class AddTorrentWindow(QDialog):
 
         def add_row(r, label, value_widget):
             lbl = QLabel(f"{label}:")
-            lbl.setStyleSheet("color: #9aa1ac;")
+            lbl.setStyleSheet(f"color: {consts.AppColors.GRAY.value};")
             grid.addWidget(lbl, r, 0, Qt.AlignmentFlag.AlignRight)
             grid.addWidget(value_widget, r, 1, 1, 3)
 
@@ -385,7 +419,7 @@ class AddTorrentWindow(QDialog):
 
         if not os.path.exists(path) or not os.path.isdir(path):
             self.free_space_label.setText(
-                colorize(f"Path doesn't exists: {path}", Colors.error_red)
+                colorize(f"Path doesn't exists: {path}", consts.AppColors.RED.value)
             )
             self._change_apply_btn_status(False)
             return
@@ -451,8 +485,8 @@ class AddTorrentWindow(QDialog):
         storage = info.files()
         n = storage.num_files()
 
-        folder_icon = qta.icon("fa5s.folder", color="#eab308")
-        file_icon = qta.icon("fa5s.file", color="#9aa1ac")
+        folder_icon = qta.icon("fa5s.folder", color=consts.AppColors.YELLOW.value)
+        file_icon = qta.icon("fa5s.file", color=consts.AppColors.GRAY.value)
 
         self._paths = []
         for i in range(n):
@@ -575,6 +609,99 @@ class AddTorrentWindow(QDialog):
         return self._torrent_info
 
 
+class InfoWindow(CloseBtnMixin):
+    def __init__(self, parent=None):
+        super().__init__("Info", 500, 500, parent)
+
+    def _build_ui(self):
+        layout = QVBoxLayout()
+        tab = QTabWidget()
+        tab.setTabPosition(QTabWidget.TabPosition.North)
+
+        first_tab = QWidget()
+        first_layout = QVBoxLayout()
+        text_browser1 = QTextBrowser()
+        text_browser1.setReadOnly(True)
+        text_browser1.setHtml("""
+        <h2>EGBitTorrent</h2>
+        <p><b>Версия:</b> 1.0<br>
+        <b>Разработчик:</b> Hokadva<br>
+        
+        <h3>О проекте</h3>
+        <p>EGBitTorrent — это учебный проект, разработанный в рамках лабораторной работы. 
+        Программа представляет собой настольный торрент-клиент с графическим интерфейсом, 
+        поддерживающий работу с magnet-ссылками и .torrent-файлами, управление очередью загрузок, 
+        просмотр детальной статистики и историю загрузок.</p>
+        
+        <h3>Используемые технологии</h3>
+        <ul>
+            <li><b>Python 3</b> — основной язык программирования.</li>
+            <li><b>PyQt6</b> — графический интерфейс пользователя (GUI).</li>
+            <li><b>libtorrent (Rasterbar)</b> — движок для работы с протоколом BitTorrent.</li>
+            <li><b>SQLite</b> — база данных для хранения истории.</li>
+            <li><b>QtAwesome</b> — библиотека для работы с иконками.</li>
+        </ul>
+        
+        <h3>Благодарности</h3>
+        <p>В интерфейсе используются бесплатные иконки из набора <b>Font Awesome Free</b> 
+        (доступны по лицензии CC BY 4.0 / SIL OFL 1.1) через библиотеку QtAwesome.</p>""")
+
+        first_layout.addWidget(text_browser1)
+        first_tab.setLayout(first_layout)
+
+        second_tab = QWidget()
+        second_layout = QVBoxLayout()
+        text_browser2 = QTextBrowser()
+        text_browser2.setReadOnly(True)
+        text_browser2.setHtml(f"""
+            <h3>Условия использования</h3>
+            <p style="color: {consts.AppColors.RED.value};"><b>ВНИМАНИЕ:</b> Данное программное обеспечение предоставляется 
+            исключительно в <b>образовательных целях</b>. Разработчик не несет ответственности за то, как вы используете эту программу.</p>
+            <p>Пожалуйста, используйте EGBitTorrent только для скачивания и распространения 
+            <b>легального контента</b> (дистрибутивов Linux, свободного ПО, открытых медиафайлов). 
+            <b>Категорически не рекомендуется</b> использовать приложение для пиратского контента. 
+            Вы несете полную ответственность за соблюдение законодательства.</p>
+            
+            <h3>Лицензия</h3>
+            <p>Исходный код данного проекта распространяется под свободной лицензией 
+            <b>GNU General Public License v3.0 (GPLv3)</b>. Вы можете изучать, изменять 
+            и распространять код, при условии, что производные работы также будут 
+            распространяться под лицензией GPLv3.</p>
+        """)
+        second_layout.addWidget(text_browser2)
+        second_tab.setLayout(second_layout)
+
+        tab.addTab(first_tab, "About")
+        tab.addTab(second_tab, "Terms of Use and Disclaimer")
+        tab.tabBar().setDocumentMode(True)
+        layout.addWidget(tab)
+        self.setLayout(layout)
+        layout.addWidget(self._create_close_btn())
+
+
+class AddGroupWindow(OkCancelMixin):
+    def __init__(self, parent=None):
+        super().__init__("Create group", 300, 100, parent)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout()
+        text_edit_layout = QHBoxLayout()
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("group name")
+        text = QLabel("Enter a group name: ")
+        text_edit_layout.addWidget(text)
+        text_edit_layout.addWidget(self.name)
+        layout.addLayout(text_edit_layout)
+        layout.addWidget(self._create_buttons())
+
+        self.setLayout(layout)
+
+    @property
+    def group_name(self) -> Optional[str]:
+        return self.name.text()
+
+
 class UI(QMainWindow):
     DETAILS_LEFT = [
         ("name", "Name"),
@@ -610,16 +737,19 @@ class UI(QMainWindow):
         "added": "-",
     }
 
-    def __init__(self, torrent_engine, db):
+    def __init__(self, torrent_engine: TorrentEngine,
+                 db: TorrentModel, settings_manager: SettingManager):
         """
         Инициализация класса
         """
         super().__init__()
 
         self.torrent_engine = torrent_engine
-        self.db = db
-        self.theme = "maroon"
-        self._current_selected_id = None
+        self.db: TorrentModel = db
+        self.settings_manager: SettingManager = settings_manager
+        self.theme: str = consts.DEFAULT_THEME
+        self._current_selected_id: str = None
+        self.groups: list = self.db.get_groups()
 
         self._build_ui()
 
@@ -628,11 +758,12 @@ class UI(QMainWindow):
         create main windows
         """
         self.resize(900, 600)
-        self.setWindowTitle("EGBitTorrent")
+        self.setWindowTitle(consts.APP_NAME)
         self._build_tool_bar()
         self._build_statusbar()
         self._build_central_menu()
         self._apply_theme(THEMES[self.theme])
+        self._draw_groups()
 
     def _build_tool_bar(self):
         """
@@ -651,21 +782,21 @@ class UI(QMainWindow):
             return act
 
         self.act_add_magnet = tool_bar_add_action(
-            "fa5s.magnet", "Add by link", "#3b82f6",
+            "fa5s.magnet", "Add by link", consts.ToolBarColors.BASE.value,
             self.add_torrent_by_magnet
         )
         self.act_add_file = tool_bar_add_action(
-            "fa5s.file-import", "Add by file", "#3b82f6",
+            "fa5s.file-import", "Add by file", consts.ToolBarColors.BASE.value,
             self.add_torent_by_file
         )
         self.act_resume = tool_bar_add_action(
-            "fa5s.play", "Run", "#22c55e", self.run_current_torrent
+            "fa5s.play", "Run", consts.ToolBarColors.GREEN.value, self.run_current_torrent
         )
         self.act_pause = tool_bar_add_action(
-            "fa5s.pause", "Stop", "#eab308", self.pause_current_torrent
+            "fa5s.pause", "Stop", consts.ToolBarColors.YELLOW.value, self.pause_current_torrent
         )
         self.act_delete = tool_bar_add_action(
-            "fa5s.trash-alt", "Remove torrent", "#ef4444", self.remove_torrent
+            "fa5s.trash-alt", "Remove torrent", consts.ToolBarColors.RED.value, self.remove_torrent
         )
 
         main_tool_bar.addSeparator()
@@ -676,13 +807,16 @@ class UI(QMainWindow):
         main_tool_bar.addWidget(spacer)
 
         self.act_theme = tool_bar_add_action(
-            "fa5s.cog", "Settings", "#9aa1ac"
+            "fa5s.cog", "Settings", consts.ToolBarColors.GRAY.value
         )
         self.statistic = tool_bar_add_action(
-            "fa5s.chart-line", "History", "#3b82f6", self._show_history
+            "fa5s.chart-pie", "Statistic", consts.ToolBarColors.BASE.value, self._show_statistic
+        )
+        self.statistic = tool_bar_add_action(
+            "fa5s.book-open", "History", consts.ToolBarColors.BASE.value, self._show_history
         )
         self.info = tool_bar_add_action(
-            "fa5s.info", "About", "#3b82f6"
+            "fa5s.info", "About", consts.ToolBarColors.BASE.value, self._show_info
         )
 
         self.addToolBar(main_tool_bar)
@@ -707,7 +841,7 @@ class UI(QMainWindow):
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._apply_filter)
         self.search_edit.addAction(
-            qta.icon("fa5s.search", color="#6b7280"), QLineEdit.ActionPosition.LeadingPosition
+            qta.icon("fa5s.search", color=consts.AppColors.GRAY.value), QLineEdit.ActionPosition.LeadingPosition
         )
         sb_layout.addWidget(self.search_edit, 1)
 
@@ -747,12 +881,6 @@ class UI(QMainWindow):
         root.addWidget(splitter, 1)
         self.setCentralWidget(central)
 
-    def _add_group(self, name):
-        item = QListWidgetItem(name)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(Qt.CheckState.Checked)
-        self.groups_list.addItem(item)
-
     def _build_group_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -761,22 +889,31 @@ class UI(QMainWindow):
 
         title = QLabel("Groups")
         title.setStyleSheet(
-            "color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+            f"color: {consts.AppColors.DARK_GREY.value}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
         )
         layout.addWidget(title)
 
         self.groups_list = QListWidget()
         self.groups_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection
+            QAbstractItemView.SelectionMode.SingleSelection
         )
 
         layout.addWidget(self.groups_list, 1)
 
+        btns_layout = QHBoxLayout()
+
         add_btn = QPushButton(
-            qta.icon("fa5s.plus", color="#9aa1ac"), "New group"
+            qta.icon("fa5s.plus", color=consts.AppColors.GRAY.value), "New group"
         )
+        rmv_btn = QPushButton(
+            qta.icon("fa5s.minus", color=consts.AppColors.RED.value), "Remove group"
+        )
+        add_btn.clicked.connect(self.add_group)
+        rmv_btn.clicked.connect(self._remove_group)
+        btns_layout.addWidget(add_btn)
+        btns_layout.addWidget(rmv_btn)
         add_btn.setStyleSheet("text-align: left;")
-        layout.addWidget(add_btn)
+        layout.addLayout(btns_layout)
 
         return panel
 
@@ -824,12 +961,10 @@ class UI(QMainWindow):
             for c in range(8):
                 item = self.table.item(row, c)
                 if item:
-                    item.setForeground(QColor("#ef4444"))
+                    item.setForeground(QColor(consts.AppColors.RED.value))
         else:
             for c in range(8):
                 item = self.table.item(row, c)
-                if item:
-                    item.setForeground(QColor("#e6e8eb"))
 
     def _update_row_items(self, row: int, torrent: TorrentFile, rows: list):
         """
@@ -852,13 +987,14 @@ class UI(QMainWindow):
                     progress_bar = wrap.findChild(QProgressBar)
                     if progress_bar:
                         progress_bar.setValue(int(torrent.progress * 100))
-                
+
                 item = self.table.item(row, 2)
                 if isinstance(item, TorrentFileItem):
                     item._sort_value = torrent.progress
                 continue
 
             item = self.table.item(row, col)
+
             if not isinstance(item, TorrentFileItem):
                 item = TorrentFileItem("", 0)
                 self.table.setItem(row, col, item)
@@ -866,7 +1002,10 @@ class UI(QMainWindow):
             if update_text and attr_name in text_formatters:
                 item.setText(text_formatters[attr_name](torrent))
 
-            item._sort_value = getattr(torrent, attr_name)
+            val = getattr(torrent, attr_name)
+            if hasattr(val, "value"):
+                val = val.value
+            item._sort_value = val
 
             if col == 0:
                 item.setData(Qt.ItemDataRole.UserRole, torrent.id)
@@ -977,15 +1116,15 @@ class UI(QMainWindow):
         ov.addWidget(right, 1)
 
         self.files = QTreeWidget()
-        self.files.setHeaderLabels(["Name", "Size", "Progress"])
-        self.files.setColumnCount(3)
+        self.files.setHeaderLabels(["Name", "Size"])
+        self.files.setColumnCount(2)
         self.files.setAlternatingRowColors(True)
         self.files.setRootIsDecorated(True)
         self.files.setUniformRowHeights(True)
         self.files.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         
         self.files.setSortingEnabled(True)
-        self.files.sortByColumn(1, Qt.SortOrder.DescendingOrder) # По размеру
+        self.files.sortByColumn(1, Qt.SortOrder.DescendingOrder)
 
         header = self.files.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -993,9 +1132,8 @@ class UI(QMainWindow):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
         self.tabs.addTab(
-            overview, qta.icon("fa5s.info-circle", color="#9aa1ac"), "More")
-        self.tabs.addTab(
-            self.files, qta.icon("fa5s.folder-open", color="#9aa1ac"), "Files")
+            overview, qta.icon("fa5s.info-circle", color=consts.AppColors.GRAY.value), "More")
+
         self.tabs.currentChanged.connect(self._status_bar_subitem)
         return self.tabs
 
@@ -1010,7 +1148,6 @@ class UI(QMainWindow):
             self._current_selected_id = None
 
             self._update_details(None)
-            self.files.clear()
 
             return
 
@@ -1025,72 +1162,6 @@ class UI(QMainWindow):
         torrent = self.torrent_engine.get(torrent_id)
         if torrent:
             self._update_details(torrent)
-            self._update_files_tab(torrent_id)
-
-    def _update_files_tab(self, torrent_id: str):
-        files_data = self.torrent_engine.get_files(
-            torrent_id)
-        if not files_data:
-            self.files.clear()
-            return
-
-        self.files.setSortingEnabled(False)
-        self.files.clear()
-
-        folder_icon = qta.icon("fa5s.folder", color="#eab308")
-        file_icon = qta.icon("fa5s.file", color="#9aa1ac")
-        folder_nodes = {}
-
-        for data in files_data:
-            path = data["name"].replace("\\", "/")
-            parts = path.split("/")
-            size = data["size"]
-            progress = data["progress"]
-
-            parent_item = None
-            current_path = ""
-
-            for part in parts[:-1]:
-                current_path = (f"{current_path}/{part}"
-                                if current_path else part)
-
-                if current_path not in folder_nodes:
-                    node = TorrentFileTreeItem([part, "", ""], True)
-                    node.setIcon(0, folder_icon)
-                    
-                    if parent_item is None:
-                        self.files.addTopLevelItem(node)
-                    else:
-                        parent_item.addChild(node)
-                    
-                    folder_nodes[current_path] = node
-                parent_item = folder_nodes[current_path]
-
-            file_name = parts[-1]
-            file_node = TorrentFileTreeItem(
-                [file_name, human_size(size), ""], False)
-            file_node._progress = progress
-            file_node.setIcon(0, file_icon)
-            file_node.setText(1, human_size(size))
-            file_node.setTextAlignment(
-                1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            file_node.setData(0, Qt.ItemDataRole.UserRole, path)
-
-            progress_bar = QProgressBar()
-            progress_bar.setRange(0, 100)
-            progress_bar.setValue(int(progress * 100))
-            progress_bar.setTextVisible(True)
-            progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            if parent_item is None:
-                self.files.addTopLevelItem(file_node)
-            else:
-                parent_item.addChild(file_node)
-
-            self.files.setItemWidget(file_node, 2, progress_bar)
-
-        self._accumulate_tree_sizes(self.files.invisibleRootItem())
-        self.files.setSortingEnabled(True)
 
     def _accumulate_tree_sizes(self, item) -> int:
         total = 0
@@ -1242,6 +1313,8 @@ class UI(QMainWindow):
             else:
                 if self.table.rowCount() == 0:
                     self._update_details(None)
+
+        self.table.setSortingEnabled(True)
             
     def _index_row_by_id(self):
         result = {}
@@ -1293,9 +1366,65 @@ class UI(QMainWindow):
             f"Uploading: {ulr}/s"
         )
 
+    def _show_statistic(self):
+        statistic_window = StaticWindow(self.db, self)
+        statistic_window.exec()
+
     def _show_history(self):
         history_window = HistoryWindow(self.db, self)
         history_window.exec()
+
+    def _show_info(self):
+        info_window = InfoWindow(self)
+        info_window.exec()
+
+    def add_group(self):
+        create_window = AddGroupWindow(self)
+        result = create_window.exec()
+
+        if result != QDialog.DialogCode.Accepted:
+            return
+
+        group_name = create_window.group_name
+        if not group_name:
+            self._error("Empty group name")
+            return
+
+        if group_name in self.groups:
+            self._error("Group with this name already exists")
+            return
+
+        self.db.create_group(group_name)
+        self.groups.append(group_name)
+        self._draw_groups()
+
+    def _draw_groups(self):
+        self.groups_list.clear()
+        self.groups_list.addItems(self.groups)
+
+    def _set_setting(self, key, setting):
+        settings = self.settings_manager.get_settings()
+        settings[key] = setting
+        return self._set_settings(settings)
+
+    def _set_settings(self, settings):
+        return self.settings_manager.set_settings(settings)
+
+    def _get_setting(self, key):
+        return self.settings_manager.get_settings()[key]
+
+    def _remove_group(self):
+        result = self._confirm("Are you really want to remove this group?")
+        if result == QMessageBox.StandardButton.No:
+            return
+
+        group = self.groups_list.selectedItems()[0].text()
+        try:
+            self.groups.remove(group)
+            self._draw_groups()
+            self.db.remove_group(group)
+
+        except Exception: pass
 
     def add_torrent_by_magnet(self):
         """

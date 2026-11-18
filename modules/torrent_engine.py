@@ -25,18 +25,21 @@ class TorrentEngine:
     }
 
     def __init__(
-            self, default_save_path: str, on_history: Callable,
-            max_active: int = 3,):
+            self, default_save_path: str,
+            max_active: int = 3, db=None):
         """Инициализация класса"""
         self._default_savepath = default_save_path
         self.max_active = max_active
-        self._on_history = on_history or (lambda torrent, status: None)
+        self._db = db
 
         self._lock = threading.RLock()
         self._session: Optional[lt.session] = None
         self._handles: Dict[str, lt.torrent_handle] = {}
         self._torrents: Dict[str, TorrentFile] = {}
         self._queued: List[str] = []
+        self._traffic: Dict[str, list] = {}
+        self._last: Dict[str, tuple] = {}
+        self._tick = 0
 
         self._init_session()
 
@@ -55,10 +58,14 @@ class TorrentEngine:
 
         try:
             self._session.apply_settings({
-                "user_agent": "EGBitTorrent/1.0",
-                "download_rate_limit": 0,
-                "upload_rate_limit": 0,
-            })
+            "user_agent": "EGBitTorrent/1.0",
+            "listen_interfaces": "0.0.0.0:6881",
+            "enable_dht": True,
+            "enable_lsd": True,
+            "enable_upnp": True,
+            "enable_natpmp": True,
+            "alert_mask": lt.alert.category_t.all_categories,
+        })
         except Exception as e:
             print(f"apply_settings failed: {e}")
 
@@ -67,6 +74,9 @@ class TorrentEngine:
             save_path: str, start_now: bool):
         """Добавляет торрент в очередь или загрузку"""
         with self._lock:
+            self._traffic[torrent_id] = list(
+                self._db.get_traffic(torrent_id) if self._db else (0, 0))
+            self._last[torrent_id] = (0, 0)
             self._handles[torrent_id] = handle
 
             model = TorrentFile(
@@ -100,6 +110,9 @@ class TorrentEngine:
         self._register(
             torrent_id, handle, extract_magnet_name(url), save_path, start_now)
 
+        if self._db:
+            self._db.save_active(torrent_id, "magnet", url, save_path, not start_now)
+
         return torrent_id
 
     def get_handle(self, torrent_id: str):
@@ -110,12 +123,15 @@ class TorrentEngine:
         if torrent_id in self._torrents:
             raise DuplicateTorrentError(torrent_id)
 
-    def add_torrent_file(self, path, save_path = None, start_now: bool = True):
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"File not found {path}")
+    def add_torrent_file(self, path, save_path=None, start_now=True, data=None):
+        if data is None:
+            if not path or not os.path.isfile(path):
+                raise FileNotFoundError(f"File not found {path}")
+            with open(path, "rb") as f:
+                data = f.read()
 
         save_path = save_path or self._default_savepath
-        info = lt.torrent_info(path)
+        info = lt.torrent_info(lt.bdecode(data))
 
         torrent_id = str(info.info_hashes().v1)
         self._duplicate_check(torrent_id)
@@ -128,7 +144,10 @@ class TorrentEngine:
             handle = self._session.add_torrent(params)
 
         self._register(torrent_id, handle, name=info.name(),
-                    save_path=save_path, start_now=start_now)
+                       save_path=save_path, start_now=start_now)
+
+        if self._db:
+            self._db.save_active(torrent_id, "file", data, save_path, not start_now)
         return torrent_id
 
     def _active_count(self) -> int:
@@ -172,6 +191,9 @@ class TorrentEngine:
                 if torrent_id in self._queued:
                     self._queued.remove(torrent_id)
 
+            if self._db:
+                self._db.set_active_paused(torrent_id, True)
+
     def resume(self, torrent_id: str):
         """Возобновляет торрент — ставит в очередь, _start_next решает."""
         with self._lock:
@@ -182,6 +204,9 @@ class TorrentEngine:
             if torrent is None or torrent.state == TorrentState.DOWNLOADING:
                 return
 
+            if self._db:
+                self._db.set_active_paused(torrent_id, False)
+
             self._queued.append(torrent_id)
             torrent.state = TorrentState.QUEUED
             self._start_next()
@@ -189,6 +214,9 @@ class TorrentEngine:
     def remove(self, torrent_id: str, delete_files: bool = False):
         """Удаляет торрент. Работает даже при невалидном handle."""
         with self._lock:
+            if self._db:
+                self._db.remove_active(torrent_id)
+
             torrent = self._torrents.get(torrent_id)
 
             if torrent:
@@ -208,11 +236,29 @@ class TorrentEngine:
                 except Exception as e:
                     print(f"[remove] error: {e}")
 
+            self._flush_traffic(torrent_id)
+            self._traffic.pop(torrent_id, None)
+            self._last.pop(torrent_id, None)
+
             self._handles.pop(torrent_id, None)
             self._torrents.pop(torrent_id, None)
             self._queued = [tid for tid in self._queued if tid != torrent_id]
 
             self._start_next()
+
+    def restore(self):
+        """Восстанавливает торренты из БД при старте приложения."""
+        if not self._db:
+            return
+        for tid, kind, source, save_path, paused in self._db.get_active():
+            try:
+                if kind == "magnet":
+                    self.add_magnet(source, save_path, start_now=not paused)
+                else:
+                    self.add_torrent_file(
+                        None, save_path, start_now=not paused, data=bytes(source))
+            except Exception as e:
+                print(f"[restore] {tid}: {e}")
 
     def move_torrent(self, source_id: str, target_id: str):
         with self._lock:
@@ -275,6 +321,16 @@ class TorrentEngine:
                         pass
                     continue
 
+                download = status.total_payload_download
+                upload = status.total_payload_upload
+                last_d, last_u = self._last.get(torrent_id, (0, 0))
+                if download < last_d: last_d = 0
+                if upload < last_u: last_u = 0
+                tr = self._traffic.setdefault(torrent_id, [0, 0])
+                tr[0] += download - last_d
+                tr[1] += upload - last_u
+                self._last[torrent_id] = (download, upload)
+
                 torrent.progress = float(status.progress)
                 torrent.seeds = status.num_seeds
                 torrent.seeds_total = status.num_complete
@@ -306,74 +362,27 @@ class TorrentEngine:
                     if torrent.finished_at is None:
                         self._on_torrent_finished(torrent_id)
 
-    def save_active_state(self, db):
-        """Сохраняет активные торренты в БД перед закрытием."""
+            self._tick += 1
+            if self._tick % 10 == 0:
+                self._flush_traffic()
+
+    def _flush_traffic(self, only_id=None):
+        if not self._db:
+            return
+        ids = [only_id] if only_id else list(self._traffic)
+        for tid in ids:
+            download, upload = self._traffic.get(tid, (0, 0))
+            self._db.set_traffic(tid, download, upload)
+
+    def torrent_traffic(self, torrent_id):
         with self._lock:
-            for torrent_id, handle in self._handles.items():
-                torrent = self._torrents.get(torrent_id)
-                if not torrent or not handle.is_valid():
-                    continue
+            download, upload = self._traffic.get(torrent_id, (0, 0))
+            return download, upload
 
-                try:
-                    resume_data = lt.bencode(handle.write_resume_data())
-                except Exception as e:
-                    print(f"Cannot get resume data for {torrent.name}: {e}")
-                    resume_data = None
-
-                db.save_active_torrent(
-                    torrent_id=torrent.id,
-                    name=torrent.name,
-                    save_path=torrent.save_path,
-                    added_at=torrent.added_at,
-                    start_now=(torrent.state != TorrentState.PAUSED),
-                    resume_data=resume_data
-                )
-
-    def load_active_state(self, db):
-        """Восстанавливает торренты из БД при старте."""
-        records = db.get_active_torrents()
-        for (torrent_id, name, save_path, added_at,
-             start_now, resume_data) in records:
-            try:
-                params = lt.add_torrent_params()
-                params.save_path = save_path
-
-                if resume_data:
-                    try:
-                        params = lt.read_resume_data(resume_data)
-                        params.save_path = save_path
-
-                    except Exception as decode_err:
-                        print(f"Error: {decode_err}")
-                        continue
-                else:
-                    pass
-
-                added_at = float(added_at)
-
-                with self._lock:
-                    handle = self._session.add_torrent(params)
-
-                    model = TorrentFile(
-                        id=torrent_id,
-                        name=name,
-                        save_path=save_path,
-                        added_at=added_at,
-                        state=(TorrentState.QUEUED
-                            if start_now else TorrentState.PAUSED),
-                    )
-                    self._handles[torrent_id] = handle
-                    self._torrents[torrent_id] = model
-
-                    if start_now:
-                        self._queued.append(torrent_id)
-                    else:
-                        handle.pause()
-
-            except Exception as e:
-                print(f"Failed to restore {name}: {e}")
-
-        self._start_next()
+    def total_traffic(self):
+        with self._lock:
+            self._flush_traffic()
+        return self._db.total_traffic() if self._db else (0, 0)
 
     def get_all_torrents(self) -> List[TorrentFile]:
         with self._lock:
@@ -462,8 +471,28 @@ class TorrentEngine:
                 })
             return result
 
+    def _on_history(self, torrent, status):
+        now = datetime.datetime.now().isoformat()
+        added_iso = datetime.datetime.fromtimestamp(torrent.added_at).isoformat()
+        
+        finished_iso = now if status == "completed" else None
+        removed_iso = now if status == "removed" else None
+        
+        self._db.add_history_record(
+            torrent_id=torrent.id,
+            name=torrent.name,
+            size_bytes=torrent.byte_size,
+            save_path=torrent.save_path,
+            added_at=added_iso,
+            status=status,
+            finished_at=finished_iso,
+            removed_at=removed_iso,
+            error_message=torrent.error_message
+        )
+
     def shutdown(self):
         with self._lock:
+            self._flush_traffic()
             try:
                 self._session.pause()
             except Exception:

@@ -11,6 +11,10 @@
 *.bmp
 *.webpm
 *.raw
+*.db
+data/
+*.db
+
 
 *.mp4
 *.avi

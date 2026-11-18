@@ -18,6 +18,7 @@ class ValidationResult:
     ok: bool
     error: Optional[str] = None
 
+
 def validate_magnet(url: str) -> ValidationResult:
     if not url or not url.strip():
         return ValidationResult(False, "Empty link")
